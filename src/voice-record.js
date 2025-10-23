@@ -1,16 +1,19 @@
-<script>
 /*!
- * Zaptos GHL Media Tools — v4.1 (compat nova bottom bar)
- * © 2025 Zaptos Company — Apache-2.0
+ * Zaptos GHL Media Tools
+ * Copyright (c) 2025 Zaptos Company
+ *
+ * Licensed under the Apache License, Version 2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  */
+// 🎯 Zaptos GHL Media Tools — grava MP3 (fallback para WAV), preview + enviar + players embutidos
 (function () {
-  if (window.__ZAPTOS_GHL_MEDIA_MP3__ === 'v4.1-mp3') return;
-  window.__ZAPTOS_GHL_MEDIA_MP3__ = 'v4.1-mp3';
+  if (window.__ZAPTOS_GHL_MEDIA_MP3__) return;
+  window.__ZAPTOS_GHL_MEDIA_MP3__ = 'v3-mp3';
 
-  const preferFormat = 'mp3';
-  const log = (...a) => console.log('[Zaptos][MediaTools]', ...a);
+  const log = (...a) => console.log('[Zaptos]', ...a);
+  const preferFormat = 'mp3'; // 'mp3' preferido; cai p/ wav se falhar
 
-  // ---- lamejs
+  // --- loader de lamejs (tenta 2 CDNs; ignora se já tiver)
   const loadLame = () => new Promise((resolve) => {
     if (window.lamejs) return resolve(true);
     const urls = [
@@ -21,73 +24,30 @@
     const tryNext = () => {
       if (i >= urls.length) return resolve(false);
       const s = document.createElement('script');
-      s.src = urls[i++]; s.async = true;
-      s.onload = () => resolve(!!window.lamejs);
+      s.src = urls[i++]; s.async = true; s.onload = () => resolve(!!window.lamejs);
       s.onerror = tryNext; document.head.appendChild(s);
     };
     tryNext();
   });
 
-  // ---- helpers
-  const waitFor = (pred, { tries = 60, gap = 250 } = {}) => new Promise(res => {
-    const t = setInterval(() => {
-      const el = pred();
-      if (el) { clearInterval(t); res(el); }
-      else if (--tries <= 0) { clearInterval(t); res(null); }
-    }, gap);
-  });
-
-  // === NOVOS SELETORES ===
-  // 1) barra inferior dos ícones (precisa escapar [ e ])
-  const findBottomBar = () => {
-    // a barra tem sempre altura 40px e usa tailwind "flex items-center h-[40px]"
-    const list = document.querySelectorAll("div.flex.items-center.h-\\[40px\\]");
-    // escolhe a que está visível e perto do campo "Digite uma mensagem..."
-    const candidates = [...list].filter(el => el.offsetParent !== null);
-    if (!candidates.length) return null;
-    // heurística: a barra que tem esquerda (flex-1) + direita (border-l)
-    return candidates.find(el =>
-      el.querySelector("div[class*='flex-row'][class*='min-w-0']") &&
-      el.querySelector("div[class*='border-l'][class*='gap-1']")
-    ) || candidates[0];
-  };
-
-  // 2) grupo ESQUERDO (onde ficam os ícones) dentro da bottom bar
-  const findLeftIconGroup = () => {
-    const bar = findBottomBar();
-    if (!bar) return null;
-    // Exatamente como no dump: "flex flex-row ... pl-2 ... flex-1 min-w-0"
-    return bar.querySelector("div[class*='flex-row'][class*='items-center'][class*='pl-2'][class*='min-w-0']");
-  };
-
-  // 3) composer para ancorar preview (usa fallback)
-  const findComposer = () => document.querySelector("textarea[placeholder*='Digite uma mensagem'], div[contenteditable='true'][role='textbox']")?.closest('div') || null;
-  const findPreviewAnchor = () => findComposer()?.parentElement || document.body;
-
-  // 4) input file de upload (geralmente já existe no DOM)
+  // --- utils UI/GHL
+  const findClearBtn = () => Array.from(document.querySelectorAll('button'))
+    .find(b => (b.textContent||'').trim().toLowerCase() === 'clear') || null;
+  const findComposer = () => document.querySelector("div[data-testid*='composer'], div[data-rbd-droppable-id]");
   const findFileInput = () =>
     document.querySelector("input[type='file'][accept*='audio']") ||
-    document.querySelector("input[type='file'][accept*='audio/*']") ||
+    document.querySelector("input[type='file'][name*='file']")   ||
     document.querySelector("input[type='file']");
 
   const simulateUpload = (file) => {
-    let input = findFileInput();
-    if (!input) {
-      // tenta abrir o seletor de anexo: clica em qualquer ícone de clip (paperclip) se existir
-      const bar = findBottomBar();
-      const candidate = bar && [...bar.querySelectorAll('svg')].find(svg => /clip|paper|attach/i.test(svg.outerHTML));
-      if (candidate) candidate.dispatchEvent(new MouseEvent('click', { bubbles:true }));
-      input = findFileInput();
-    }
+    const input = findFileInput();
     if (!input) { alert('❌ Campo de upload não encontrado.'); return false; }
     const dt = new DataTransfer(); dt.items.add(file);
-    input.files = dt.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   };
 
-  // ---- PCM encode
+  // --- encoder helpers
   const floatTo16 = (f32) => {
     const i16 = new Int16Array(f32.length);
     for (let i=0;i<f32.length;i++) {
@@ -96,184 +56,247 @@
     }
     return i16;
   };
+
   const encodeWAV = (samples, sampleRate) => {
-    const numChannels = 1, bytesPerSample = 2, blockAlign = numChannels * bytesPerSample;
+    const numChannels = 1;
+    const bytesPerSample = 2;
+    const blockAlign = numChannels * bytesPerSample;
     const byteRate = sampleRate * blockAlign;
     const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
     const view = new DataView(buffer);
-    const w = (o,s) => { for (let i=0;i<s.length;i++) view.setUint8(o+i, s.charCodeAt(i)); };
-    let o=0;
-    w(o,'RIFF'); o+=4; view.setUint32(o,36+samples.length*bytesPerSample,true); o+=4;
-    w(o,'WAVE'); o+=4; w(o,'fmt '); o+=4; view.setUint32(o,16,true); o+=4;
-    view.setUint16(o,1,true); o+=2; view.setUint16(o,1,true); o+=2;
-    view.setUint32(o,sampleRate,true); o+=4; view.setUint32(o,byteRate,true); o+=4;
-    view.setUint16(o,blockAlign,true); o+=2; view.setUint16(o,8*bytesPerSample,true); o+=2;
-    w(o,'data'); o+=4; view.setUint32(o,samples.length*bytesPerSample,true); o+=4;
-    const i16 = floatTo16(samples); for (let i=0;i<i16.length;i++,o+=2) view.setInt16(o,i16[i],true);
+
+    const writeStr = (off, str) => { for (let i=0;i<str.length;i++) view.setUint8(off+i, str.charCodeAt(i)); };
+    let offset = 0;
+    writeStr(offset, 'RIFF'); offset += 4;
+    view.setUint32(offset, 36 + samples.length * bytesPerSample, true); offset += 4;
+    writeStr(offset, 'WAVE'); offset += 4;
+    writeStr(offset, 'fmt '); offset += 4;
+    view.setUint32(offset, 16, true); offset += 4;             // Subchunk1Size
+    view.setUint16(offset, 1, true); offset += 2;               // PCM
+    view.setUint16(offset, numChannels, true); offset += 2;
+    view.setUint32(offset, sampleRate, true); offset += 4;
+    view.setUint32(offset, byteRate, true); offset += 4;
+    view.setUint16(offset, blockAlign, true); offset += 2;
+    view.setUint16(offset, 8 * bytesPerSample, true); offset += 2; // bits per sample
+    writeStr(offset, 'data'); offset += 4;
+    view.setUint32(offset, samples.length * bytesPerSample, true); offset += 4;
+
+    const i16 = floatTo16(samples);
+    for (let i=0;i<i16.length;i++, offset+=2) view.setInt16(offset, i16[i], true);
+
     return new Blob([view], { type: 'audio/wav' });
   };
+
   const encodeMP3 = (samples, sampleRate, kbps=128) => {
     const lame = window.lamejs;
-    const enc = new lame.Mp3Encoder(1, sampleRate, kbps);
-    const i16 = floatTo16(samples), chunk = 1152, parts=[];
-    for (let i=0;i<i16.length;i+=chunk) {
-      const out = enc.encodeBuffer(i16.subarray(i, i+chunk));
-      if (out.length) parts.push(out);
+    const mp3encoder = new lame.Mp3Encoder(1, sampleRate, kbps);
+    const i16 = floatTo16(samples);
+    const chunkSize = 1152;
+    const chunks = [];
+    for (let i=0; i<i16.length; i+=chunkSize) {
+      const part = i16.subarray(i, i+chunkSize);
+      const mp3buf = mp3encoder.encodeBuffer(part);
+      if (mp3buf.length) chunks.push(mp3buf);
     }
-    const end = enc.flush(); if (end.length) parts.push(end);
-    return new Blob(parts, { type: 'audio/mpeg' });
+    const end = mp3encoder.flush();
+    if (end.length) chunks.push(end);
+    return new Blob(chunks, { type: 'audio/mpeg' });
   };
 
-  // ---- UI
+  // --- gravação via WebAudio (ScriptProcessor) para capturar PCM
   function createRecorderUI() {
     if (document.getElementById('zaptos-rec-btn')) return;
 
-    const leftGroup = findLeftIconGroup();
-    if (!leftGroup) return;
+    const clearBtn = findClearBtn();
+    if (!clearBtn || !clearBtn.parentNode) return;
 
     const wrapper = document.createElement('div');
     wrapper.id = 'zaptos-rec-wrapper';
-    Object.assign(wrapper.style, { display:'inline-flex', alignItems:'center', gap:'6px' });
+    Object.assign(wrapper.style, {
+      display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px', position: 'relative'
+    });
 
-    // Ícone pequeno para combinar com a barra (w-4 h-4)
     const btn = document.createElement('button');
     btn.id = 'zaptos-rec-btn';
-    btn.type = 'button';
+    btn.textContent = '🎙️';
     btn.title = 'Gravar áudio (MP3/WAV)';
-    btn.innerHTML = '<span style="font-size:14px; line-height:1">🎙️</span>';
     Object.assign(btn.style, {
-      display:'inline-flex', alignItems:'center', justifyContent:'center',
-      width:'24px', height:'24px',
-      borderRadius:'6px', background:'#2563eb', color:'#fff',
-      border:'none', cursor:'pointer'
+      padding: '6px 12px', borderRadius: '4px', backgroundColor: '#007bff',
+      color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold'
     });
 
     const timer = document.createElement('span');
     timer.id = 'zaptos-timer';
     timer.textContent = '00:00';
-    Object.assign(timer.style, { fontSize:'11px', marginLeft:'4px', opacity:.8 });
+    Object.assign(timer.style, { fontSize: '14px', color: '#333', padding: '4px' });
 
     wrapper.append(btn, timer);
+    clearBtn.parentNode.insertBefore(wrapper, clearBtn);
 
-    // Insere como primeiro item do grupo esquerdo (antes dos demais ícones)
-    leftGroup.prepend(wrapper);
+    // estado de gravação
+    let ac = null, source = null, proc = null, stream = null;
+    let buffers = []; // Float32Array chunks
+    let seconds = 0, tHandle = null, sampleRate = 44100;
 
-    // estado
-    let ac=null, source=null, proc=null, stream=null;
-    let buffers=[], seconds=0, tHandle=null, sampleRate=44100;
-    const tick = () => { seconds++; const m=String(Math.floor(seconds/60)).padStart(2,'0'); const s=String(seconds%60).padStart(2,'0'); timer.textContent=`${m}:${s}`; };
-    const resetTimer = () => { clearInterval(tHandle); seconds=0; timer.textContent='00:00'; };
+    const tick = () => {
+      seconds++;
+      const m = String(Math.floor(seconds/60)).padStart(2,'0');
+      const s = String(seconds%60).padStart(2,'0');
+      timer.textContent = `${m}:${s}`;
+    };
+    const resetTimer = () => { clearInterval(tHandle); seconds = 0; timer.textContent = '00:00'; };
 
     const start = async () => {
-      if (!navigator.mediaDevices?.getUserMedia) return alert('Navegador sem suporte a microfone.');
+      if (!navigator.mediaDevices?.getUserMedia) { alert('Navegador sem suporte a getUserMedia.'); return; }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:true, noiseSuppression:true }});
-        ac = new (window.AudioContext||window.webkitAudioContext)();
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }});
+        ac = new (window.AudioContext || window.webkitAudioContext)();
         sampleRate = ac.sampleRate;
         source = ac.createMediaStreamSource(stream);
-        proc = ac.createScriptProcessor(4096,1,1);
-        proc.onaudioprocess = (e)=> buffers.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        // ScriptProcessor (suporte amplo). Buffer 4096, mono.
+        const bufSize = 4096;
+        proc = ac.createScriptProcessor(bufSize, 1, 1);
+        proc.onaudioprocess = (e) => {
+          const ch = e.inputBuffer.getChannelData(0);
+          // copiar chunk
+          buffers.push(new Float32Array(ch));
+        };
         source.connect(proc); proc.connect(ac.destination);
-        tHandle = setInterval(tick,1000);
-        btn.innerHTML = '⏹️';
-      } catch(e){ log('mic error', e); alert('Permita o acesso ao microfone.'); }
+
+        tHandle = setInterval(tick, 1000);
+        btn.textContent = '⏹️';
+      } catch (e) {
+        log('erro mic', e);
+        alert('Permita o acesso ao microfone para gravar áudio.');
+      }
     };
 
     const stop = async () => {
-      try{ source&&source.disconnect(); }catch{}
-      try{ proc&&proc.disconnect(); }catch{}
-      try{ stream&&stream.getTracks().forEach(t=>t.stop()); }catch{}
-      try{ ac&&ac.close(); }catch{}
-      resetTimer(); btn.innerHTML = '<span style="font-size:14px; line-height:1">🎙️</span>';
+      try { source && source.disconnect(); } catch {}
+      try { proc && proc.disconnect(); } catch {}
+      try { stream && stream.getTracks().forEach(t => t.stop()); } catch {}
+      try { ac && ac.close(); } catch {}
 
-      let total=0; buffers.forEach(b=> total+=b.length);
-      const merged = new Float32Array(total); let off=0; for (const b of buffers){ merged.set(b,off); off+=b.length; }
-      buffers=[];
+      resetTimer();
+      btn.textContent = '🎙️';
 
+      // merge dos buffers
+      let total = 0; buffers.forEach(b => total += b.length);
+      const merged = new Float32Array(total);
+      let off = 0; for (const b of buffers) { merged.set(b, off); off += b.length; }
+      buffers = [];
+
+      // tenta MP3; cai para WAV
       let blob, fileName;
-      try{
-        if (preferFormat==='mp3' && window.lamejs){ blob = encodeMP3(merged, sampleRate, 128); fileName='gravacao.mp3'; }
-        else throw new Error('no mp3');
+      try {
+        if (preferFormat === 'mp3' && window.lamejs) {
+          blob = encodeMP3(merged, sampleRate, 128);
+          fileName = 'gravacao.mp3';
+        } else {
+          throw new Error('lamejs indisponível');
+        }
       } catch {
-        blob = encodeWAV(merged, sampleRate); fileName='gravacao.wav';
+        blob = encodeWAV(merged, sampleRate);
+        fileName = 'gravacao.wav';
       }
+
       const file = new File([blob], fileName, { type: blob.type });
       showPreview(file);
     };
 
     const showPreview = (file) => {
       const old = document.getElementById('zaptos-preview'); if (old) old.remove();
-      const anchor = findPreviewAnchor();
+
       const preview = document.createElement('div');
       preview.id = 'zaptos-preview';
       Object.assign(preview.style, {
-        position:'absolute', zIndex:50,
-        left:'16px', bottom:'64px',
-        display:'flex', gap:'10px', alignItems:'center',
-        background:'#fff', padding:'8px 10px', borderRadius:'10px',
-        boxShadow:'0 10px 24px rgba(0,0,0,.15)'
+        position: 'absolute', bottom: '55px', left: '20px', zIndex: 9999,
+        display: 'flex', flexDirection: 'row', gap: '10px', alignItems: 'center',
+        background: '#fff', padding: '8px', borderRadius: '6px',
+        boxShadow: '0 6px 20px rgba(0,0,0,.15)'
       });
+
       const audio = document.createElement('audio');
-      audio.controls = true; audio.src = URL.createObjectURL(file); audio.style.maxWidth='260px';
+      audio.controls = true; audio.src = URL.createObjectURL(file); audio.style.maxWidth = '260px';
 
       const sendBtn = document.createElement('button');
-      sendBtn.textContent='✅ Enviar';
-      Object.assign(sendBtn.style,{ padding:'6px 10px', background:'#16a34a', color:'#fff', border:'none', borderRadius:'8px', cursor:'pointer', fontWeight:600 });
-      sendBtn.onclick = ()=>{ simulateUpload(file); preview.remove(); };
+      sendBtn.textContent = '✅ Enviar';
+      Object.assign(sendBtn.style, {
+        padding: '6px 10px', background: '#28a745', color: '#fff',
+        border: 'none', borderRadius: '4px', cursor: 'pointer'
+      });
+      sendBtn.onclick = () => { simulateUpload(file); preview.remove(); };
 
       const redoBtn = document.createElement('button');
-      redoBtn.textContent='🔁 Regravar';
-      Object.assign(redoBtn.style,{ padding:'6px 10px', background:'#dc2626', color:'#fff', border:'none', borderRadius:'8px', cursor:'pointer', fontWeight:600 });
-      redoBtn.onclick = ()=> preview.remove();
+      redoBtn.textContent = '🔁 Gravar novamente';
+      Object.assign(redoBtn.style, {
+        padding: '6px 10px', background: '#dc3545', color: '#fff',
+        border: 'none', borderRadius: '4px', cursor: 'pointer'
+      });
+      redoBtn.onclick = () => preview.remove();
 
       preview.append(audio, sendBtn, redoBtn);
-      (anchor||document.body).appendChild(preview);
+
+      const composer = findComposer();
+      if (composer && composer.parentNode) composer.parentNode.appendChild(preview);
+      else wrapper.parentNode.insertBefore(preview, wrapper.nextSibling);
     };
 
-    btn.onclick = () => (btn.textContent.includes('⏹️') ? stop() : start());
+    btn.onclick = () => {
+      // se está gravando? (usa timer como indício)
+      if (btn.textContent === '⏹️') stop();
+      else start();
+    };
   }
 
-  // ---- players embutidos (idem v4)
+  // --- players embutidos (sem quebrar links)
   function enhanceAttachmentPlayers(root=document) {
-    const sel = [
-      "a.sms-file-attachment",
-      "a[href$='.mp3'],a[href$='.wav'],a[href$='.ogg'],a[href$='.webm'],a[href$='.mp4'],a[href$='.mov']",
-      "div a[href*='.mp3'],div a[href*='.wav'],div a[href*='.ogg'],div a[href*='.webm'],div a[href*='.mp4'],div a[href*='.mov']",
-    ].join(',');
-    const links = Array.from(root.querySelectorAll(sel));
+    const links = Array.from(root.querySelectorAll('a.sms-file-attachment'));
     for (const link of links) {
       if (!link || link.dataset.zaptosEnhanced) continue;
-      const href = link.getAttribute('href')||link.textContent||''; if (!href) continue;
-      link.dataset.zaptosEnhanced='true';
-      let url=href; try{ url = new URL(href, location.href).href; }catch{}
-      const ext = url.split('?')[0].split('#')[0].split('.').pop()?.toLowerCase(); if (!ext) continue;
+      const href = link.getAttribute('href') || link.textContent || '';
+      if (!href) continue;
+      link.dataset.zaptosEnhanced = 'true';
+
+      let url = href; try { url = new URL(href, location.href).href; } catch {}
+      const ext = url.split('?')[0].split('#')[0].split('.').pop()?.toLowerCase();
+      if (!ext) continue;
+
       if (['mp3','wav','webm','ogg'].includes(ext)) {
-        const audio=document.createElement('audio'); audio.controls=true; audio.src=url; audio.style.maxWidth='320px'; link.replaceWith(audio);
+        const audio = document.createElement('audio');
+        audio.controls = true; audio.src = url; audio.style.maxWidth = '300px';
+        link.replaceWith(audio);
       } else if (['mp4','mov','webm'].includes(ext)) {
-        const video=document.createElement('video'); video.controls=true; video.width=320; video.src=url; link.replaceWith(video);
+        const video = document.createElement('video');
+        video.controls = true; video.width = 300; video.src = url;
+        link.replaceWith(video);
       }
     }
   }
 
-  // ---- boot
+  // boot
   (async () => {
     const lameOK = await loadLame();
-    log(lameOK ? 'MP3 OK' : 'fallback WAV');
+    log(lameOK ? 'MP3 encoder carregado (lamejs)' : 'Encoder MP3 indisponível — fallback para WAV');
 
-    const injectAll = () => { try{ createRecorderUI(); }catch(e){ log('inject err', e); } try{ enhanceAttachmentPlayers(); }catch(e){ log('players err', e); } };
+    const tryInject = () => { try { createRecorderUI(); } catch(e){ log('inject err', e); } };
+    const tryPlayers = (n) => { try { enhanceAttachmentPlayers(n||document); } catch(e){ log('player err', e); } };
 
-    // aguarda a barra inferior aparecer
-    waitFor(findBottomBar).then(() => injectAll());
+    tryInject(); tryPlayers();
 
-    // observa DOM (troca de rota, abrir contato/conversa)
-    const mo = new MutationObserver(() => injectAll());
-    mo.observe(document.documentElement, { childList:true, subtree:true });
+    const mo = new MutationObserver((muts) => {
+      let ui=false, links=false;
+      for (const m of muts) {
+        if (m.type === 'childList' && m.addedNodes?.length) {
+          ui = links = true;
+          m.addedNodes.forEach(n => { if (n.querySelectorAll) tryPlayers(n); });
+        }
+      }
+      if (ui) tryInject();
+      if (links) tryPlayers();
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
 
-    // watchdog de rota SPA
-    let last=location.href;
-    setInterval(()=>{ if (location.href!==last){ last=location.href; setTimeout(injectAll, 300); } }, 300);
-
-    log('Zaptos GHL Media Tools v4.1 — ativo');
+    log('🎯 Zaptos GHL Media Tools — MP3/WAV ativo');
   })();
 })();
-</script>
