@@ -270,6 +270,15 @@
         const video = document.createElement('video');
         video.controls = true; video.width = 300; video.src = url;
         link.replaceWith(video);
+      } else if (['png','jpg','jpeg','gif','webp','bmp'].includes(ext)) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = 'preview';
+        img.loading = 'lazy';
+        img.style.maxWidth = '320px';
+        img.style.maxHeight = '240px';
+        img.style.objectFit = 'contain';
+        link.replaceWith(img);
       }
     }
   }
