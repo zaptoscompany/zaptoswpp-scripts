@@ -226,8 +226,8 @@
   // ===== players (auto preview links) =====
   function enhanceAttachmentPlayers(root = document) {
     const sel = ["a.sms-file-attachment",
-      "a[href$='.mp3'],a[href$='.wav'],a[href$='.ogg'],a[href$='.webm'],a[href$='.mp4'],a[href$='.mov']",
-      "div a[href*='.mp3'],div a[href*='.wav'],div a[href*='.ogg'],div a[href*='.webm'],div a[href*='.mp4'],div a[href*='.mov']"].join(',');
+      "a[href$='.mp3'],a[href$='.wav'],a[href$='.ogg'],a[href$='.webm'],a[href$='.mp4'],a[href$='.mov'],a[href$='.gif'],a[href$='.webp'],a[href$='.png'],a[href$='.jpg'],a[href$='.jpeg'],a[href$='.bmp']",
+      "div a[href*='.mp3'],div a[href*='.wav'],div a[href*='.ogg'],div a[href*='.webm'],div a[href*='.mp4'],div a[href*='.mov'],div a[href*='.gif'],div a[href*='.webp'],div a[href*='.png'],div a[href*='.jpg'],div a[href*='.jpeg'],div a[href*='.bmp']"].join(',');
     const links = [...root.querySelectorAll(sel)];
     for (const link of links) {
       if (!link || link.dataset.zaptosEnhanced) continue;
@@ -239,6 +239,15 @@
         const a = document.createElement('audio'); a.controls = true; a.src = url; a.style.maxWidth = '320px'; link.replaceWith(a);
       } else if (['mp4', 'mov', 'webm'].includes(ext)) {
         const v = document.createElement('video'); v.controls = true; v.width = 320; v.src = url; link.replaceWith(v);
+      } else if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = 'preview';
+        img.loading = 'lazy';
+        img.style.maxWidth = '320px';
+        img.style.maxHeight = '240px';
+        img.style.objectFit = 'contain';
+        link.replaceWith(img);
       }
     }
   }
