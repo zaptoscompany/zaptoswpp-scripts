@@ -1,16 +1,25 @@
-// == ZaptosVoip GHL header button (final: renomeado, webphone URL preservado) ==
+<script>
+// == Wavoip GHL header button (final, edge-first, safe storage, polished) ==
 (function(){
-  if (window.__ZAPTOSVOIP_GHL_BTN__) return console.log('[zaptosvoip] already loaded');
-  window.__ZAPTOSVOIP_GHL_BTN__ = true;
+  if (window.__WAVOIP_GHL_BTN_FINAL__) return console.log('[wavoip] already loaded');
+  window.__WAVOIP_GHL_BTN_FINAL__ = true;
 
-  const DEBUG = false;
+  const DEBUG = false; // true para logs no console
   const POPUP_OPTS = 'width=360,height=640,menubar=0,toolbar=0,location=0,status=0';
   const DEFAULT_COUNTRY = '55';
-  const FALLBACK_TOKEN_ENDPOINT = '/api/wavoip/token'; // mantenha (endpoint pode continuar sendo /wavoip)
+  const EDGE_TOKEN_URL = 'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/get-wavoip-token'; // ajuste se necessário
+  const SESSION_KEYS = {
+    token: 'wavoip_token_user_override',
+    apiKey: 'wavoip_instance_api_key',
+    loc: 'wavoip_location_id'
+  };
 
-  const log = (...a)=>{ if (DEBUG) console.log('[zaptosvoip]', ...a); };
-  const errLog = (...a)=>console.error('[zaptosvoip]', ...a);
+  const log = (...a)=> { if (DEBUG) console.log('[wavoip]', ...a); };
+  const errLog = (...a)=> console.error('[wavoip]', ...a);
 
+  window._wavoipGHL_debug = window._wavoipGHL_debug || { edgeCalls: [], lastResolve: null };
+
+  // ------- util phone formatting / extraction -------
   function normalizePhone(raw){
     if (!raw) return null;
     let s = String(raw).trim();
@@ -22,168 +31,171 @@
     return only;
   }
 
-  function findPhoneInNode(node){
-    try {
-      if (!node) return null;
-      const link = node.querySelector && (node.querySelector('a[href^="tel:"], a[href*="wa.me"], a[href*="whatsapp:"], a[href*="whatsapp"]'));
-      if (link){
-        const href = (link.getAttribute('href')||link.textContent||'').trim();
-        const m = href.match(/(?:tel:|wa\.me\/|whatsapp:)?\+?([0-9\-\s\(\)]+)/i);
-        if (m) { const p = normalizePhone(m[1]); if (p) return p; }
-      }
-      const inputTel = node.querySelector && (node.querySelector('input[type="tel"], input[name*="phone"], input[name*="telefone"]'));
-      if (inputTel && inputTel.value) {
-        const p = normalizePhone(inputTel.value);
-        if (p) return p;
-      }
-      const dataPhone = node.querySelector && node.querySelector('[data-phone], .lead-phone, .contact-phone, .phone, .profile-phone');
-      if (dataPhone){
-        const txt = (dataPhone.dataset && dataPhone.dataset.phone) ? dataPhone.dataset.phone : (dataPhone.textContent||'');
-        const p = normalizePhone(txt);
-        if (p) return p;
-      }
-      const labels = node.querySelectorAll && node.querySelectorAll('label, span, div, p, strong');
-      if (labels && labels.length){
-        for (let i=0;i<labels.length;i++){
-          const t = (labels[i].textContent||'').trim();
-          if (/^(telefone|phone)$|Telefone|Phone/i.test(t) || /\bTelefone\b|\bPhone\b/i.test(t)){
-            const nxt = labels[i].nextElementSibling;
-            const candidateText = (nxt && (nxt.value || nxt.textContent || nxt.innerText)) || (labels[i].parentElement && labels[i].parentElement.innerText) || '';
-            const m = String(candidateText).match(/(?:\+?\d{1,3}[\s\-\.]?)?(\d[\d\-\s\(\)]{6,}\d)/);
-            if (m) { const p = normalizePhone(m[0]); if (p) return p; }
-          }
-        }
-      }
-      const txt = (node.innerText || node.textContent || '');
-      const m = txt.match(/(?:\+?\d{1,3}[\s\-\.]?)?(\d[\d\-\s\(\)]{6,}\d)/);
-      if (m) { const p = normalizePhone(m[0]); if (p) return p; }
-    } catch(e){}
-    return null;
-  }
-
   function extractPhone(){
     try {
-      const rightSelectors = ['aside', '.right-panel', '.lead-sidebar', '.contact-sidebar', '.contact-details', '.contact-info'];
-      for (const sel of rightSelectors){
-        const panel = document.querySelector(sel);
-        if (panel){
-          const p = findPhoneInNode(panel);
-          if (p) { log('phone from panel', sel, p); return p; }
+      // 1) tel input in contact panel
+      const telInput = document.querySelector('aside input[type="tel"], .contact-sidebar input[type="tel"], .contactsApp input[type="tel"], input[name*="phone"], input[name*="telefone"]');
+      if (telInput && telInput.value) {
+        const p = normalizePhone(telInput.value);
+        if (p) { log('phone from input', p); return p; }
+      }
+
+      // 2) look for phone in known panels / header near title
+      const selectors = ['#central-panel-header','[data-testid*="conversation-title"]','.conversation-header','.contact-sidebar','.lead-sidebar','.right-panel','aside'];
+      for (const sel of selectors){
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const m = (el.innerText||'').match(/(?:\+?\d{1,3}[\s\-\.]?)?(\d[\d\-\s\(\)]{6,}\d)/);
+        if (m){
+          const p = normalizePhone(m[0]);
+          if (p) { log('phone from', sel, p); return p; }
         }
       }
-      const headerCandidates = [
-        document.querySelector('#central-panel-header'),
-        document.querySelector('.conversation-header-text'),
-        document.querySelector('.conversation-title'),
-        document.querySelector('[data-testid*="conversation-title"]'),
-        document.querySelector('.message-header')
-      ];
-      for (const h of headerCandidates){
-        if (!h) continue;
-        const p = findPhoneInNode(h);
-        if (p) { log('phone from header', p); return p; }
-      }
-      const central = document.querySelector('.conversations-list') || document.querySelector('.conversations') || document.querySelector('main') || document.body;
-      if (central){
-        const p = findPhoneInNode(central);
-        if (p) { log('phone from center', p); return p; }
-      }
-      const all = document.body.innerText || '';
-      const m = all.match(/(?:\+?\d{1,3}[\s\-\.]?)?(\d[\d\-\s\(\)]{6,}\d)/);
-      if (m) { const p = normalizePhone(m[0]); if (p) { log('phone fallback global', p); return p; } }
+
+      // 3) fallback: whole document
+      const m = (document.body.innerText || '').match(/(?:\+?\d{1,3}[\s\-\.]?)?(\d[\d\-\s\(\)]{6,}\d)/);
+      if (m) return normalizePhone(m[0]);
+
     } catch(e){ errLog('extractPhone err', e); }
     return null;
   }
 
-  function guessTokenFromStorage(){
+  // ------- token fetch helpers -------
+  async function fetchEdgeToken(locationId, instanceApiKey){
+    window._wavoipGHL_debug.edgeCalls = window._wavoipGHL_debug.edgeCalls || [];
     try {
-      const keys = [...Object.keys(localStorage||{}), ...Object.keys(sessionStorage||{})];
-      for (const k of keys){
-        if (/wavoip|wvoip|wavoip_token|wavoipToken|token|access_token|jwt|bearer/i.test(k)){
-          const v = localStorage[k] || sessionStorage[k];
-          if (v && String(v).length > 10) return v;
-        }
-      }
-      const cookie = document.cookie.split(';').map(c=>c.trim()).find(c=>/wavoip|token|session|jwt|bearer/i.test(c));
-      if (cookie) return cookie.split('=')[1];
-      const globals = ['WAVOIP_TOKEN','wavoipToken','wavoip_token','__WAVOIP__','__INITIAL_STATE__'];
-      for (const g of globals){
-        try {
-          const val = eval(g);
-          if (typeof val === 'string' && val.length > 10) return val;
-          if (val && typeof val === 'object') {
-            const s = JSON.stringify(val);
-            const m = s.match(/"token"\s*:\s*"(.*?)"/);
-            if (m) return m[1];
-          }
-        } catch(e){}
-      }
-    } catch(e){ errLog('guessTokenFromStorage error', e); }
-    return null;
+      if (!locationId || !instanceApiKey) return { token: null, status: 'missing-params' };
+
+      // Try simple query GET first (no custom headers -> avoid OPTIONS)
+      const url = new URL(EDGE_TOKEN_URL);
+      url.searchParams.set('location_id', locationId);
+      url.searchParams.set('api_key', instanceApiKey);
+
+      const resp = await fetch(url.toString(), { method: 'GET', credentials: 'omit' });
+      const text = await resp.text().catch(()=>null);
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch(e){ json = null; }
+      const record = { url: url.toString(), status: resp.status, ok: resp.ok, text, json };
+      window._wavoipGHL_debug.edgeCalls.push(record);
+      log('edge query result', record);
+
+      // pick token from known properties
+      const token = (json && (json.token || json.access_token || (json.data && json.data.token))) || null;
+      if (token) return { token, status: 'ok-query', raw: json };
+
+      // if not found, try header fallback (may trigger OPTIONS in some setups)
+      try {
+        const r2 = await fetch(EDGE_TOKEN_URL, { method:'GET', credentials:'omit', headers: { 'apikey': instanceApiKey, 'x-wavoip-location-id': locationId }});
+        const t2 = await r2.text().catch(()=>null);
+        let j2 = null;
+        try { j2 = t2 ? JSON.parse(t2) : null; } catch(e){ j2 = null; }
+        window._wavoipGHL_debug.edgeCalls.push({ url: EDGE_TOKEN_URL, status: r2.status, ok: r2.ok, text: t2, json: j2, via:'header-apikey' });
+        const token2 = (j2 && (j2.token || j2.access_token || (j2.data && j2.data.token))) || null;
+        if (token2) return { token: token2, status: 'ok-header', raw: j2 };
+      } catch(e){ /* ignore */ }
+
+      return { token: null, status: 'no-token-found', raw: json || text };
+    } catch(e){ errLog('fetchEdgeToken error', e); return { token: null, status: 'error', error: String(e) }; }
   }
 
-  async function fetchTokenFromServer(){
-    try {
-      const r = await fetch(FALLBACK_TOKEN_ENDPOINT, { credentials: 'include' });
-      if (!r.ok) { log('fallback token endpoint returned', r.status); return null; }
-      const j = await r.json();
-      return j && (j.token || j.access_token || j.wavoip_token) || null;
-    } catch(e){ log('fetchTokenFromServer error', e); return null; }
-  }
+  async function resolveTokenFlow(){
+    // 1) session override
+    const storedToken = sessionStorage.getItem(SESSION_KEYS.token);
+    if (storedToken) { log('using session token'); return { token: storedToken, source: 'session' }; }
 
-  async function resolveToken(){
-    const stored = sessionStorage.getItem('zaptosvoip_token_user_override');
-    if (stored) { log('token from sessionStorage override'); return stored; }
-    const g = guessTokenFromStorage();
-    if (g) { log('token guessed from storage'); return g; }
-    const srv = await fetchTokenFromServer();
-    if (srv) { log('token from fallback endpoint'); return srv; }
-    const promptToken = prompt('ZaptosVoip token não encontrado automaticamente. Cole o token aqui (ou cancele):');
-    if (promptToken) {
-      sessionStorage.setItem('zaptosvoip_token_user_override', promptToken.trim());
-      return promptToken.trim();
+    // 2) if apiKey+location saved -> try edge
+    const savedApiKey = sessionStorage.getItem(SESSION_KEYS.apiKey);
+    const savedLocation = sessionStorage.getItem(SESSION_KEYS.loc) || (location.pathname.match(/\/location\/([^\/]+)/) || [])[1] || null;
+    if (savedApiKey && savedLocation){
+      const r = await fetchEdgeToken(savedLocation, savedApiKey);
+      if (r && r.token){
+        sessionStorage.setItem(SESSION_KEYS.token, r.token);
+        return { token: r.token, source: 'edge', meta: r };
+      } else {
+        // saved credentials failed -> remove to force prompt next time
+        sessionStorage.removeItem(SESSION_KEYS.apiKey);
+        sessionStorage.removeItem(SESSION_KEYS.loc);
+        log('saved apiKey failed; cleared', r);
+      }
     }
-    return null;
+
+    // 3) prompt user (if allowed) to paste API key + location (only once)
+    const ask = confirm('Deseja tentar buscar o token via Edge? (será solicitado API Key + Location ID) — Clique "OK" para informar, "Cancelar" para inserir token manual.');
+    if (ask){
+      const apiKey = prompt('Cole a Instance API Key (detalhe: será salva na sessão por segurança):');
+      if (!apiKey) return { token: null, source: 'user-skip' };
+      const locationId = prompt('Cole a Location ID (GHL) associada a essa instância:');
+      if (!locationId) return { token: null, source: 'user-skip' };
+
+      // call edge
+      const r = await fetchEdgeToken(locationId.trim(), apiKey.trim());
+      if (r && r.token){
+        // save in session for convenience
+        sessionStorage.setItem(SESSION_KEYS.apiKey, apiKey.trim());
+        sessionStorage.setItem(SESSION_KEYS.loc, locationId.trim());
+        sessionStorage.setItem(SESSION_KEYS.token, r.token);
+        return { token: r.token, source: 'edge', meta: r };
+      } else {
+        alert('Não foi possível obter token da Edge com as credenciais informadas. Verifique API Key / Location ID.');
+        return { token: null, source: 'edge-failed', meta: r };
+      }
+    }
+
+    // 4) fallback: guess from storage/globals
+    const guesses = [...Object.keys(localStorage||{}), ...Object.keys(sessionStorage||{})];
+    for (const k of guesses){
+      if (/wavoip|wvoip|wavoip_token|wavoipToken|token/i.test(k)){
+        const v = localStorage[k] || sessionStorage[k];
+        if (v && String(v).length > 10) return { token: v, source: 'guess:'+k };
+      }
+    }
+
+    // 5) manual paste fallback
+    const manual = prompt('Cole o token Wavoip aqui (ou cancele):');
+    if (manual) { sessionStorage.setItem(SESSION_KEYS.token, manual.trim()); return { token: manual.trim(), source: 'manual' }; }
+
+    return { token: null, source: 'none' };
   }
 
+  function clearSaved() {
+    sessionStorage.removeItem(SESSION_KEYS.apiKey);
+    sessionStorage.removeItem(SESSION_KEYS.loc);
+    sessionStorage.removeItem(SESSION_KEYS.token);
+    log('cleared saved credentials');
+  }
+
+  // ------- UI: header button (WhatsApp icon, same visual size) -------
   function createHeaderButton(){
     const wrapper = document.createElement('div');
-    wrapper.id = 'zaptosvoip-ghl-header-btn';
-    wrapper.className = 'zaptosvoip-ghl-header-btn';
-    wrapper.style.display = 'inline-flex';
-    wrapper.style.alignItems = 'center';
-    wrapper.style.marginLeft = '8px';
+    wrapper.id = 'wavoip-ghl-header-btn';
+    Object.assign(wrapper.style, { display:'inline-flex', alignItems:'center', gap:'8px', marginLeft:'8px' });
 
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.setAttribute('aria-label','Ligar pelo WhatsApp');
-    btn.className = 'flex items-center px-2.5 py-1 border border-gray-300 rounded-md';
-    btn.style.background = '#1db954';
-    btn.style.color = '#fff';
-    btn.style.cursor = 'pointer';
-    btn.style.fontWeight = '600';
-    btn.style.height = '36px';
-    btn.style.display = 'inline-flex';
-    btn.style.alignItems = 'center';
-    btn.style.gap = '8px';
-
     btn.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-        <path d="M20.52 3.48A11.9 11.9 0 0012 0C5.37 0 .01 5.36.01 12c0 2.12.56 4.18 1.62 5.98L0 24l6.27-1.61A11.94 11.94 0 0012 24c6.63 0 12-5.36 12-12 0-3.2-1.25-6.2-3.48-8.52zM12 21.5c-1.33 0-2.63-.34-3.76-.98l-.27-.16-3.72.96.99-3.61-.17-.29A9.5 9.5 0 012.5 12c0-5.24 4.26-9.5 9.5-9.5 2.54 0 4.92.99 6.71 2.78A9.45 9.45 0 0121.5 12c0 5.24-4.26 9.5-9.5 9.5z" fill="currentColor"/>
-      </svg>
-      <span class="zaptosvoip-text" style="font-size:13px;line-height:1;">Ligar pelo WhatsApp</span>
+      <span style="display:inline-flex;align-items:center;gap:8px;">
+        <!-- whatsapp-like icon (simple) -->
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+          <path d="M21 16.5a16 16 0 0 1-3.6.5 15.3 15.3 0 0 1-7.7-2.7L6 17l1.6-4.4A9.9 9.9 0 0 1 5 9.5C5 6 7.2 3 10.2 2.5 12 .2 15 1 17 3.2c2 2.2 2.7 5.4 2 8.2-.5 2.2-.8 3.1-1 4.6z" fill="currentColor"/>
+        </svg>
+        <span class="wavoip-text" style="font-weight:600;font-size:13px;">Ligar pelo WhatsApp</span>
+      </span>
     `;
-
+    Object.assign(btn.style, {
+      background:'#1db954', color:'#fff', border:'none', padding:'6px 10px',
+      borderRadius:'12px', cursor:'pointer', fontWeight:700, height:'36px', display:'inline-flex', alignItems:'center'
+    });
     btn.onmouseenter = ()=> btn.style.transform = 'translateY(-1px)';
     btn.onmouseleave = ()=> btn.style.transform = '';
-
     wrapper.appendChild(btn);
     return { wrapper, btn };
   }
 
-  const candidateHeaderSelectors = [
+  // ------- header insertion logic -------
+  const headerSelectors = [
     '#central-panel-header .message-header-actions',
-    '.message-header-actions',
+    '.message-header .message-header-actions',
     '.conversation-header .actions',
     '.right-panel .header-actions',
     '.card-header .actions',
@@ -194,49 +206,50 @@
   ];
 
   function findHeaderContainer(){
-    for (const sel of candidateHeaderSelectors){
-      const el = document.querySelector(sel);
-      if (el) {
-        const prefer = el.querySelector('.button-group, .flex, .actions, .message-header-actions') || el;
-        return { el: prefer, sel };
-      }
+    for (const s of headerSelectors){
+      const el = document.querySelector(s);
+      if (el) return { el, sel: s };
     }
-    const titleNode = document.querySelector('[data-testid*="conversation-title"], .conversation-title, #central-panel-header h2');
-    if (titleNode && titleNode.parentElement){
-      const maybe = Array.from(titleNode.parentElement.children).find(c=>c.querySelector && c.querySelector('button, .fa-phone, svg'));
+    const title = document.querySelector('[data-testid*="conversation-title"], .conversation-title, #central-panel-header h2');
+    if (title && title.parentElement){
+      const maybe = Array.from(title.parentElement.children).find(c=>c.querySelector && c.querySelector('button, svg, .fa-phone'));
       if (maybe) return { el: maybe, sel: 'sibling-of-title' };
     }
     return null;
   }
 
-  function insertButtonIntoHeader(){
+  function insertButton(){
+    if (document.querySelector('#wavoip-ghl-header-btn')) return true;
+    const found = findHeaderContainer();
+    if (!found) return false;
+    const { el } = found;
+    const { wrapper, btn } = createHeaderButton();
     try {
-      if (document.querySelector('#zaptosvoip-ghl-header-btn')) return true;
-      const found = findHeaderContainer();
-      if (!found) return false;
-      const { el } = found;
-      const { wrapper, btn } = createHeaderButton();
-      try { el.appendChild(wrapper); } catch(e){ document.body.appendChild(wrapper); }
-      btn.addEventListener('click', onClickHandler);
-      log('injected into', found.sel);
-      return true;
-    } catch(e){ errLog('insertButtonIntoHeader err', e); return false; }
+      const group = el.querySelector('.button-group') || el.querySelector('.flex') || el;
+      group.appendChild(wrapper);
+    } catch(e){
+      el.appendChild(wrapper);
+    }
+    btn.addEventListener('click', onClickHandler);
+    return true;
   }
 
-  function removeInjectedButton(){
-    const node = document.querySelector('#zaptosvoip-ghl-header-btn');
-    if (node) node.remove();
+  function removeButton(){
+    const n = document.querySelector('#wavoip-ghl-header-btn'); if (n) n.remove();
   }
 
+  // ------- click handler -------
   async function onClickHandler(ev){
-    ev.preventDefault();
-    const btn = ev.currentTarget;
+    ev && ev.preventDefault && ev.preventDefault();
+    const btn = ev ? ev.currentTarget : document.querySelector('#wavoip-ghl-header-btn button');
+    if (!btn) return;
     try {
       btn.disabled = true;
-      const textNode = btn.querySelector('.zaptosvoip-text');
+      const textNode = btn.querySelector('.wavoip-text');
       const origText = textNode ? textNode.textContent : btn.textContent;
       if (textNode) textNode.textContent = 'Carregando...';
 
+      // extract phone
       let phone = extractPhone();
       if (!phone){
         const manual = prompt('Número não detectado. Digite o número (ex: 551199999999):');
@@ -244,27 +257,39 @@
       }
       if (!phone){ alert('Número inválido.'); if (textNode) textNode.textContent = origText; btn.disabled=false; return; }
 
-      const token = await resolveToken();
-      if (!token){ alert('Token ZaptosVoip não encontrado. Cole-o quando solicitado ou configure fallback endpoint.'); if (textNode) textNode.textContent = origText; btn.disabled=false; return; }
+      // resolve token
+      window._wavoipGHL_debug.lastResolve = { at: Date.now() };
+      const r = await resolveTokenFlow();
+      window._wavoipGHL_debug.lastResolve.result = r;
+      log('resolveTokenFlow result', r);
 
-      // NOTE: webphone URL intentionally unchanged
+      if (!r || !r.token){
+        alert('Token Wavoip não obtido. Verifique credenciais ou insira token manualmente.');
+        if (textNode) textNode.textContent = origText;
+        btn.disabled=false;
+        return;
+      }
+
+      const token = r.token;
+      // open wavoip webphone
       const params = new URLSearchParams({ token, phone, start_if_ready: 'true', close_after_call: 'true' });
       const url = 'https://app.wavoip.com/call?' + params.toString();
-      window.open(url, 'zaptosvoip_call', POPUP_OPTS);
-      log('opened webphone', url);
-    } catch(e){ errLog('onClickHandler', e); alert('Erro iniciando chamada: ' + (e && e.message || e)); }
-    finally {
-      const textNode = btn.querySelector('.zaptosvoip-text');
-      if (textNode){
-        setTimeout(()=>{ textNode.textContent = 'Ligar pelo WhatsApp'; btn.disabled=false; }, 600);
-      } else btn.disabled=false;
+      window.open(url, 'wavoip_call', POPUP_OPTS);
+
+    } catch(e){
+      errLog('onClickHandler err', e);
+      alert('Erro ao iniciar chamada: ' + (e && e.message || e));
+    } finally {
+      const textNode = document.querySelector('#wavoip-ghl-header-btn .wavoip-text');
+      setTimeout(()=>{ if (textNode) textNode.textContent = 'Ligar pelo WhatsApp'; const b = document.querySelector('#wavoip-ghl-header-btn button'); if (b) b.disabled=false; }, 700);
     }
   }
 
+  // ------- page relevance & observer -------
   function isRelevantPage(){
     try {
-      const path = location.pathname || '';
-      if (/\/conversations\b|\/conversations\/|\/contacts\b|\/contacts\//i.test(path)) return true;
+      const p = location.pathname || '';
+      if (/\/conversations\b|\/conversations\/|\/contacts\b|\/contacts\//i.test(p)) return true;
       if (document.querySelector('.conversation-title') || document.querySelector('.lead-sidebar') || document.querySelector('.contact-sidebar')) return true;
       const right = document.querySelector('aside') || document.querySelector('.right-panel') || document.querySelector('.lead-sidebar');
       if (right && /(Contato|Telefone|Phone)/i.test(right.innerText||'')) return true;
@@ -273,41 +298,35 @@
   }
 
   let lastLocation = location.href;
-  function checkAndInject(){
+  function checkAndEnsure(){
     try {
       if (isRelevantPage()){
-        const ok = insertButtonIntoHeader();
-        if (!ok) log('header container not found yet; will retry');
+        const ok = insertButton();
+        if (!ok) log('header container not found yet');
       } else {
-        removeInjectedButton();
+        removeButton();
       }
-    } catch(e){ errLog('checkAndInject', e); }
+    } catch(e){ errLog('checkAndEnsure', e); }
   }
 
   const mo = new MutationObserver((muts)=>{
-    if (location.href !== lastLocation){
-      lastLocation = location.href;
-      setTimeout(checkAndInject, 400);
-      return;
-    }
+    if (location.href !== lastLocation){ lastLocation = location.href; setTimeout(checkAndEnsure, 450); return; }
     if (isRelevantPage()){
-      if (!document.querySelector('#zaptosvoip-ghl-header-btn')) checkAndInject();
+      if (!document.querySelector('#wavoip-ghl-header-btn')) checkAndEnsure();
     } else {
-      if (document.querySelector('#zaptosvoip-ghl-header-btn')) removeInjectedButton();
+      if (document.querySelector('#wavoip-ghl-header-btn')) removeButton();
     }
   });
-  mo.observe(document.documentElement, { childList: true, subtree: true });
+  mo.observe(document.documentElement, { childList:true, subtree:true });
 
-  setTimeout(checkAndInject, 700);
+  // expose helpers for debugging
+  window._wavoipGHL = Object.assign(window._wavoipGHL || {}, {
+    resolveTokenFlow, fetchEdgeToken, extractPhone, clearSaved, debug: window._wavoipGHL_debug, EDGE_TOKEN_URL
+  });
 
-  window._zaptosvoipGHL = {
-    insertButtonIntoHeader,
-    removeInjectedButton,
-    extractPhone,
-    resolveToken,
-    isRelevantPage,
-    normalizePhone
-  };
-
-  log('zaptosvoip-ghl loader (final) initialized');
+  // initial
+  setTimeout(checkAndEnsure, 700);
+  log('wavoip-ghl loader (final) initialized');
 })();
+
+</script>
