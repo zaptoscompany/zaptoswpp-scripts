@@ -12,13 +12,6 @@
     apiKey: 'zaptosvoip_instance_api_key',
     loc:   'zaptosvoip_location_id'
   };
-  const WAVOIP_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/@wavoip/wavoip-webphone/dist/index.umd.min.js';
-  const WAVOIP_TOKEN_KEY = 'zaptos_voip_user_token';
-
-  let wavoipScriptPromise = null;
-  let wavoipReadyPromise = null;
-  let wavoipRendered = false;
-  let wavoipActiveToken = null;
 
   const log    = (...a)=> { if (DEBUG) console.log('[ZaptosVoip]', ...a); };
   const errLog = (...a)=> console.error('[ZaptosVoip]', ...a);
@@ -194,190 +187,6 @@
 
     } catch(e){ errLog('extractPhoto err', e); }
     return '';
-  }
-
-  // ------- VOIP webphone helpers -------
-  function getWavoipTokenStorageKey(){
-    return WAVOIP_TOKEN_KEY;
-  }
-
-  function getSavedWavoipToken(){
-    try {
-      const raw = localStorage.getItem(getWavoipTokenStorageKey());
-      return raw ? raw.trim() : '';
-    } catch { return ''; }
-  }
-
-  function saveWavoipToken(token){
-    const clean = (token || '').trim();
-    if (!clean) return;
-    try { localStorage.setItem(getWavoipTokenStorageKey(), clean); } catch {}
-  }
-
-  function clearWavoipToken(){
-    try { localStorage.removeItem(getWavoipTokenStorageKey()); } catch {}
-    wavoipActiveToken = null;
-    wavoipReadyPromise = null;
-  }
-
-  function requestWavoipToken(){
-    const saved = getSavedWavoipToken();
-    const typed = prompt('Insira o token do Webphone VOIP:', saved || '');
-    if (!typed) return null;
-    const token = typed.trim();
-    if (!token) return null;
-    saveWavoipToken(token);
-    return token;
-  }
-
-  function ensureWavoipToken(forcePrompt){
-    if (forcePrompt) return requestWavoipToken();
-    const saved = getSavedWavoipToken();
-    if (saved) return saved;
-    return requestWavoipToken();
-  }
-
-  function loadWavoipScript(){
-    if (window.wavoipWebphone) return Promise.resolve();
-    if (wavoipScriptPromise) return wavoipScriptPromise;
-
-    wavoipScriptPromise = new Promise((resolve, reject)=>{
-      const existing = document.querySelector('script[data-zaptos-wavoip-script="1"]');
-      if (existing){
-        if (window.wavoipWebphone){ resolve(); return; }
-        existing.addEventListener('load', ()=>resolve(), { once: true });
-        existing.addEventListener('error', ()=>reject(new Error('Falha ao carregar o script do VOIP.')), { once: true });
-        return;
-      }
-
-      const script = document.createElement('script');
-      script.src = WAVOIP_SCRIPT_URL;
-      script.async = true;
-      script.dataset.zaptosWavoipScript = '1';
-      script.onload = ()=>resolve();
-      script.onerror = ()=>reject(new Error('Falha ao carregar o script do VOIP.'));
-      document.head.appendChild(script);
-    }).catch((e)=>{
-      wavoipScriptPromise = null;
-      throw e;
-    });
-
-    return wavoipScriptPromise;
-  }
-
-  function enforceWavoipWidgetButtonHidden(){
-    try {
-      if (
-        window.wavoip &&
-        window.wavoip.settings &&
-        typeof window.wavoip.settings.setShowWidgetButton === 'function'
-      ) {
-        window.wavoip.settings.setShowWidgetButton(false);
-      }
-    } catch(e){
-      log('setShowWidgetButton(false) failed', e);
-    }
-  }
-
-  async function initWavoipWebphone(forcePromptToken){
-    if (forcePromptToken) clearWavoipToken();
-    if (wavoipReadyPromise) return wavoipReadyPromise;
-
-    wavoipReadyPromise = (async ()=>{
-      await loadWavoipScript();
-
-      if (!window.wavoipWebphone || typeof window.wavoipWebphone.render !== 'function'){
-        throw new Error('Biblioteca VOIP indisponivel.');
-      }
-
-      if (!wavoipRendered){
-        await window.wavoipWebphone.render({
-          widget: {
-            showWidgetButton: false,
-            startOpen: false
-          }
-        });
-        wavoipRendered = true;
-      }
-
-      if (!window.wavoip || !window.wavoip.device){
-        throw new Error('Webphone VOIP nao inicializou.');
-      }
-
-      const token = ensureWavoipToken(forcePromptToken);
-      if (!token) throw new Error('Token do VOIP nao informado.');
-
-      if (wavoipActiveToken !== token){
-        window.wavoip.device.add(token);
-        wavoipActiveToken = token;
-      }
-
-      enforceWavoipWidgetButtonHidden();
-      return true;
-    })().catch((e)=>{
-      wavoipReadyPromise = null;
-      throw e;
-    });
-
-    return wavoipReadyPromise;
-  }
-
-  async function startVoipLeadCall(phone){
-    await initWavoipWebphone(false);
-
-    if (!window.wavoip || !window.wavoip.call){
-      throw new Error('Modulo de chamadas VOIP indisponivel.');
-    }
-
-    enforceWavoipWidgetButtonHidden();
-
-    if (typeof window.wavoip.call.setInput === 'function'){
-      window.wavoip.call.setInput(phone);
-    }
-
-    const startFn =
-      (window.wavoip.call && (window.wavoip.call.startCall || window.wavoip.call.start)) ||
-      null;
-
-    if (typeof startFn !== 'function'){
-      return { ok: true, started: false, reason: 'start-fn-missing' };
-    }
-
-    const opts = wavoipActiveToken ? { fromTokens: [wavoipActiveToken] } : null;
-    const startPromise = opts ? startFn(phone, opts) : startFn(phone);
-
-    if (
-      window.wavoip.widget &&
-      typeof window.wavoip.widget.open === 'function'
-    ) {
-      window.wavoip.widget.open();
-    }
-
-    const result = await startPromise;
-    if (result && result.err){
-      const reason =
-        (result.err.devices && result.err.devices[0] && result.err.devices[0].reason) ||
-        result.err.message ||
-        String(result.err);
-      throw new Error(reason || 'Falha ao iniciar chamada no VOIP.');
-    }
-
-    return { ok: true, started: true };
-  }
-
-  async function openVoipForManualDial(message){
-    await initWavoipWebphone(false);
-
-    if (window.wavoip && window.wavoip.widget){
-      if (typeof window.wavoip.widget.open === 'function'){
-        window.wavoip.widget.open();
-      } else if (typeof window.wavoip.widget.toggle === 'function'){
-        window.wavoip.widget.toggle();
-      }
-    }
-
-    enforceWavoipWidgetButtonHidden();
-    if (message) alert(message);
   }
 
   // ------- token fetch helpers (API) -------
@@ -594,22 +403,49 @@
     try {
       btn.disabled = true;
       const textNode = btn.querySelector('.zaptosvoip-text');
+      const origText = textNode ? textNode.textContent : btn.textContent;
       if (textNode) textNode.textContent = 'Carregando...';
 
-      const phone = normalizePhone(extractPhone());
+      let phone = extractPhone();
       if (!phone){
-        await openVoipForManualDial(
-          'Nao foi possivel identificar o numero do contato. O VOIP foi aberto para discagem manual.'
-        );
+        const manual = prompt('Número não detectado. Digite o número (ex: 551199999999):');
+        phone = normalizePhone(manual);
+      }
+      if (!phone){
+        alert('Número inválido.');
+        if (textNode) textNode.textContent = origText;
+        btn.disabled=false;
         return;
       }
 
-      const callResult = await startVoipLeadCall(phone);
-      if (callResult && callResult.started === false){
-        await openVoipForManualDial(
-          'Nao foi possivel iniciar a ligacao automaticamente. Use o VOIP para discagem manual.'
-        );
+      const photo = extractPhoto() || '';
+      const name  = extractName() || '';
+
+      window._zaptosVoipGHL_debug.lastResolve = { at: Date.now() };
+      const r = await resolveTokenFlow();
+      window._zaptosVoipGHL_debug.lastResolve.result = r;
+      log('resolveTokenFlow result', r);
+
+      if (!r || !r.token){
+        alert('Token de ligação não obtido. Verifique a API Key ou tente novamente.');
+        if (textNode) textNode.textContent = origText;
+        btn.disabled=false;
+        return;
       }
+
+      const token = r.token;
+
+      const params = new URLSearchParams({
+        token,
+        phone,
+        name,
+        photo,
+        start_if_ready: 'true',
+        close_after_call: 'true'
+      });
+
+      const url = 'https://voip.zaptoswpp.com/call/?' + params.toString();
+      window.open(url, 'zaptosvoip_call', POPUP_OPTS);
 
     } catch(e){
       errLog('onClickHandler err', e);
@@ -643,7 +479,6 @@
   let lastLocation = location.href;
   function checkAndEnsure(){
     try {
-      enforceWavoipWidgetButtonHidden();
       if (isRelevantPage()){
         const ok = insertButton();
         if (!ok) log('header container not found yet');
@@ -674,11 +509,6 @@
     extractName,
     extractPhoto,
     clearSaved,
-    clearWavoipToken,
-    requestWavoipToken,
-    initWavoipWebphone,
-    startVoipLeadCall,
-    openVoipForManualDial,
     debug: window._zaptosVoipGHL_debug,
     EDGE_TOKEN_URL
   });
