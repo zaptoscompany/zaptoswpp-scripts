@@ -487,6 +487,58 @@
     return wavoipReadyPromise;
   }
 
+  async function startVoipLeadCall(phone) {
+    await initWavoipWebphone(false);
+
+    if (!window.wavoip || !window.wavoip.call) {
+      throw new Error('Modulo de chamadas VOIP indisponivel.');
+    }
+
+    enforceWavoipWidgetButtonHidden();
+
+    if (typeof window.wavoip.call.setInput === 'function') {
+      window.wavoip.call.setInput(phone);
+    }
+
+    if (
+      window.wavoip.widget &&
+      typeof window.wavoip.widget.open === 'function'
+    ) {
+      window.wavoip.widget.open();
+    } else if (
+      window.wavoip.widget &&
+      typeof window.wavoip.widget.toggle === 'function'
+    ) {
+      window.wavoip.widget.toggle();
+    }
+
+    const startFn =
+      (window.wavoip.call &&
+        (window.wavoip.call.startCall || window.wavoip.call.start)) ||
+      null;
+
+    if (typeof startFn !== 'function') {
+      return { ok: true, started: false };
+    }
+
+    const opts = wavoipActiveToken ? { fromTokens: [wavoipActiveToken] } : null;
+    const result = opts
+      ? await startFn(phone, opts)
+      : await startFn(phone);
+
+    if (result && result.err) {
+      const reason =
+        (result.err.devices &&
+          result.err.devices[0] &&
+          result.err.devices[0].reason) ||
+        result.err.message ||
+        String(result.err);
+      throw new Error(reason || 'Falha ao iniciar chamada no VOIP.');
+    }
+
+    return { ok: true, started: true };
+  }
+
   // ----------- BOTÃO GRADIENTE ZAPTOS -----------
 
   function createGradientButton() {
@@ -735,7 +787,7 @@
     btn.style.pointerEvents = 'none';
 
     try {
-      const { phone, name, photo } = extractContactInfoNewUI();
+      const { phone } = extractContactInfoNewUI();
       let finalPhone = phone;
 
       if (!finalPhone) {
@@ -749,24 +801,7 @@
         return;
       }
 
-      const tokenInfo = await resolveTokenFlow();
-      if (!tokenInfo || !tokenInfo.token) {
-        return;
-      }
-
-      const params = new URLSearchParams({
-        token: tokenInfo.token,
-        phone: finalPhone,
-        start_if_ready: 'true',
-        close_after_call: 'true'
-      });
-
-      if (name) params.set('name', name);
-      if (photo) params.set('photo', photo);
-
-      const url = CALL_PAGE_URL + '?' + params.toString();
-      log('opening call URL:', url);
-      window.open(url, 'zaptos_voip_call', POPUP_OPTS);
+      await startVoipLeadCall(finalPhone);
     } catch (e) {
       errLog('onClickCallButton error', e);
       alert('Erro ao iniciar chamada: ' + (e && e.message ? e.message : e));
@@ -807,6 +842,7 @@
     clearWavoipToken,
     requestWavoipToken,
     initWavoipWebphone,
+    startVoipLeadCall,
     debug: window._zaptosVoipGHL_debug
   };
 
