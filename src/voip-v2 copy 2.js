@@ -612,20 +612,22 @@
     const btn = document.createElement('button');
     btn.id = WAVOIP_BUTTON_ID;
     btn.type = 'button';
-    btn.title = 'Abrir Webphone WhatsAPP';
+    btn.title = 'Abrir Webphone WhatsApp';
 
     btn.style.display = 'flex';
     btn.style.alignItems = 'center';
     btn.style.justifyContent = 'center';
     btn.style.gap = '6px';
-    btn.style.padding = '2px 10px';
-    btn.style.height = '26px';
+    btn.style.padding = '0 12px';
+    btn.style.height = '34px';
+    btn.style.minHeight = '34px';
     btn.style.border = 'none';
     btn.style.outline = 'none';
-    btn.style.borderRadius = '15px';
+    btn.style.borderRadius = '999px';
     btn.style.background = '#1C9A43';
     btn.style.color = '#FFFFFF';
-    btn.style.fontSize = '11px';
+    btn.style.fontSize = '12px';
+    btn.style.lineHeight = '1';
     btn.style.fontWeight = '700';
     btn.style.cursor = 'pointer';
     btn.style.boxShadow = '0 1px 3px rgba(0,0,0,0.18)';
@@ -654,7 +656,7 @@
     `;
 
     const label = document.createElement('span');
-    label.textContent = 'WhatsAPP';
+    label.textContent = 'WhatsApp';
 
     btn.appendChild(icon);
     btn.appendChild(label);
