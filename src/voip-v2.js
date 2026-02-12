@@ -368,7 +368,7 @@
 
   function requestWavoipToken() {
     const saved = getSavedWavoipToken();
-    const typed = prompt('Insira o token do Webphone Wavoip:', saved || '');
+    const typed = prompt('Insira o token do Webphone VOIP:', saved || '');
     if (!typed) return null;
     const token = typed.trim();
     if (!token) return null;
@@ -399,7 +399,7 @@
         existing.addEventListener('load', () => resolve(), { once: true });
         existing.addEventListener(
           'error',
-          () => reject(new Error('Falha ao carregar o script da Wavoip.')),
+          () => reject(new Error('Falha ao carregar o script do VOIP.')),
           { once: true }
         );
         return;
@@ -411,7 +411,7 @@
       script.dataset.zaptosWavoipScript = '1';
       script.onload = () => resolve();
       script.onerror = () =>
-        reject(new Error('Falha ao carregar o script da Wavoip.'));
+        reject(new Error('Falha ao carregar o script do VOIP.'));
       document.head.appendChild(script);
     }).catch((e) => {
       wavoipScriptPromise = null;
@@ -449,7 +449,7 @@
         !window.wavoipWebphone ||
         typeof window.wavoipWebphone.render !== 'function'
       ) {
-        throw new Error('Biblioteca Wavoip indisponivel.');
+        throw new Error('Biblioteca VOIP indisponivel.');
       }
 
       if (!wavoipRendered) {
@@ -463,12 +463,12 @@
       }
 
       if (!window.wavoip || !window.wavoip.device) {
-        throw new Error('Webphone Wavoip nao inicializou.');
+        throw new Error('Webphone VOIP nao inicializou.');
       }
 
       const token = ensureWavoipToken(forcePromptToken);
       if (!token) {
-        throw new Error('Token do Wavoip nao informado.');
+        throw new Error('Token do VOIP nao informado.');
       }
 
       if (wavoipActiveToken !== token) {
@@ -591,7 +591,8 @@
     if (isSlot) {
       container.style.display = 'flex';
       container.style.alignItems = 'center';
-      container.style.marginRight = '10px';
+      container.style.justifyContent = 'flex-end';
+      container.style.marginRight = '4px';
     }
 
     if (btn.parentElement === container) return true;
@@ -664,7 +665,7 @@
       return null;
     }
 
-    log('Wavoip button inserted');
+    log('VOIP button inserted');
     return btn;
   }
 
@@ -689,7 +690,7 @@
         !window.wavoip.widget ||
         typeof window.wavoip.widget.toggle !== 'function'
       ) {
-        throw new Error('Widget Wavoip indisponivel.');
+        throw new Error('Widget VOIP indisponivel.');
       }
 
       enforceWavoipWidgetButtonHidden();
@@ -698,7 +699,7 @@
       enforceWavoipWidgetButtonHidden();
     } catch (e) {
       errLog('onClickWavoipButton error', e);
-      alert('Erro ao abrir Webphone Wavoip: ' + (e && e.message ? e.message : e));
+      alert('Erro ao abrir Webphone VOIP: ' + (e && e.message ? e.message : e));
     } finally {
       btn.dataset.busy = '0';
       btn.style.opacity = origOpacity;
@@ -710,11 +711,11 @@
     ev && ev.preventDefault && ev.preventDefault();
     try {
       await initWavoipWebphone(true);
-      alert('Token do Wavoip atualizado.');
+      alert('Token do VOIP atualizado.');
     } catch (e) {
       if (e && /nao informado/i.test(String(e.message || e))) return;
       errLog('onContextMenuWavoipButton error', e);
-      alert('Nao foi possivel atualizar o token do Wavoip.');
+      alert('Nao foi possivel atualizar o token do VOIP.');
     }
   }
 
