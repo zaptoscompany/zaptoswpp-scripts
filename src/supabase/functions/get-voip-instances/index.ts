@@ -46,6 +46,91 @@ function normalizeInstanceRow(row: Record<string, unknown>) {
   };
 }
 
+function parseJsonSafe(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function extractContactIdFromConversationPayload(payload: any): string {
+  return readString(
+    payload?.contactId ??
+      payload?.contact_id ??
+      payload?.contact?.id ??
+      payload?.conversation?.contactId ??
+      payload?.conversation?.contact_id ??
+      payload?.conversation?.contact?.id ??
+      payload?.data?.contactId ??
+      payload?.data?.contact_id ??
+      payload?.data?.contact?.id
+  );
+}
+
+function extractContactPhone(payload: any): string {
+  return readString(
+    payload?.phone ??
+      payload?.contact?.phone ??
+      payload?.data?.phone ??
+      payload?.data?.contact?.phone
+  );
+}
+
+async function getGhlAccessTokenForLocation(
+  supabase: ReturnType<typeof createClient>,
+  locationId: string
+) {
+  const columns = ['LocationId', 'location_id', 'locationid'];
+  let lastError: any = null;
+
+  for (const column of columns) {
+    const { data, error } = await supabase
+      .from('code_autorization_ghl')
+      .select('*')
+      .eq(column, locationId)
+      .limit(1);
+
+    if (error) {
+      lastError = error;
+      continue;
+    }
+
+    if (data && data.length) {
+      const row = data[0] as Record<string, unknown>;
+      const token = readString(
+        row.access_token ?? row.accessToken ?? row.token ?? row.ghl_access_token
+      );
+      return { token, row, matchedColumn: column };
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return null;
+}
+
+async function fetchGhlResource(
+  resourceUrl: string,
+  accessToken: string,
+  version: string
+) {
+  const resp = await fetch(resourceUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Version: version,
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+
+  const text = await resp.text().catch(() => '');
+  const json = parseJsonSafe(text);
+  return { ok: resp.ok, status: resp.status, text, json };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -67,6 +152,12 @@ Deno.serve(async (req) => {
 
   const url = new URL(req.url);
   const locationId = resolveLocationId(req, url);
+  const contactIdParam = readString(
+    url.searchParams.get('contact_id') ?? url.searchParams.get('contactId')
+  );
+  const conversationIdParam = readString(
+    url.searchParams.get('conversation_id') ?? url.searchParams.get('conversationId')
+  );
 
   if (!locationId) {
     return jsonResponse(
@@ -79,6 +170,107 @@ Deno.serve(async (req) => {
     auth: { autoRefreshToken: false, persistSession: false }
   });
 
+  // Fluxo 1: Buscar telefone do contato via API GHL usando o token salvo por location.
+  if (contactIdParam || conversationIdParam) {
+    let authData: any = null;
+    try {
+      authData = await getGhlAccessTokenForLocation(supabase, locationId);
+    } catch (e: any) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: e?.message || 'Erro ao buscar token da GHL',
+          location_id: locationId
+        },
+        500
+      );
+    }
+
+    if (!authData || !authData.token) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: 'access_token nao encontrado para esta location',
+          location_id: locationId
+        },
+        404
+      );
+    }
+
+    const accessToken = authData.token;
+    let resolvedContactId = contactIdParam;
+    let conversationPayload: any = null;
+
+    if (!resolvedContactId && conversationIdParam) {
+      const conversationUrl = `https://services.leadconnectorhq.com/conversations/${conversationIdParam}`;
+      const convo = await fetchGhlResource(
+        conversationUrl,
+        accessToken,
+        '2021-04-15'
+      );
+
+      if (!convo.ok) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: 'Falha ao consultar conversa na GHL',
+            location_id: locationId,
+            conversation_id: conversationIdParam,
+            ghl_status: convo.status,
+            ghl_response: convo.json || convo.text
+          },
+          502
+        );
+      }
+
+      conversationPayload = convo.json;
+      resolvedContactId = extractContactIdFromConversationPayload(conversationPayload);
+    }
+
+    if (!resolvedContactId) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: 'contact_id nao encontrado',
+          location_id: locationId,
+          conversation_id: conversationIdParam || null
+        },
+        404
+      );
+    }
+
+    const contactUrl = `https://services.leadconnectorhq.com/contacts/${resolvedContactId}`;
+    const contactResp = await fetchGhlResource(contactUrl, accessToken, '2021-07-28');
+
+    if (!contactResp.ok) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: 'Falha ao consultar contato na GHL',
+          location_id: locationId,
+          contact_id: resolvedContactId,
+          ghl_status: contactResp.status,
+          ghl_response: contactResp.json || contactResp.text
+        },
+        502
+      );
+    }
+
+    const phone = extractContactPhone(contactResp.json);
+
+    return jsonResponse({
+      ok: true,
+      mode: 'contact-phone',
+      location_id: locationId,
+      contact_id: resolvedContactId,
+      conversation_id: conversationIdParam || null,
+      phone: phone || null,
+      contact: contactResp.json?.contact || contactResp.json?.data?.contact || null,
+      conversation: conversationPayload?.conversation || null
+    });
+  }
+
+  // Fluxo 2: Buscar instancias VOIP por location.
   const { data, error } = await supabase
     .from('voip_instances')
     .select('*')

@@ -31,6 +31,7 @@
   let wavoipRendered = false;
   let wavoipActiveToken = null;
   let wavoipActiveTokens = [];
+  let wavoipActiveInstances = [];
   let wavoipConnectedLocationId = null;
   let wavoipConnectedInstanceIds = [];
 
@@ -43,6 +44,7 @@
     window._zaptosVoipGHL_debug || {
       edgeCalls: [],
       instanceCalls: [],
+      contactCalls: [],
       lastResolve: null,
       lastScope: null
     };
@@ -80,6 +82,124 @@
     try {
       return JSON.parse(text);
     } catch {
+      return null;
+    }
+  }
+
+  function looksLikeGhlId(value) {
+    return /^[A-Za-z0-9]{8,}$/.test(String(value || '').trim());
+  }
+
+  function readUrlParam(names) {
+    try {
+      const u = new URL(location.href);
+      for (const name of names) {
+        const v = String(u.searchParams.get(name) || '').trim();
+        if (v) return v;
+      }
+    } catch {
+      /* ignore */
+    }
+    return '';
+  }
+
+  function extractEntityIdsFromUrl() {
+    const contactFromQuery = readUrlParam([
+      'contactId',
+      'contact_id',
+      'contactid'
+    ]);
+    const conversationFromQuery = readUrlParam([
+      'conversationId',
+      'conversation_id',
+      'conversationid'
+    ]);
+
+    const segments = String(location.pathname || '')
+      .split('/')
+      .map((s) => decodeURIComponent(s || '').trim())
+      .filter(Boolean);
+
+    const ignored = new Set([
+      'v2',
+      'location',
+      'contacts',
+      'conversations',
+      'manual_actions',
+      'templates',
+      'trigger-links',
+      'settings',
+      'opportunities'
+    ]);
+
+    function findIdAfter(keyword) {
+      const kw = String(keyword || '').toLowerCase();
+      for (let i = 0; i < segments.length; i++) {
+        if (segments[i].toLowerCase() !== kw) continue;
+        for (let j = i + 1; j < Math.min(i + 4, segments.length); j++) {
+          const candidate = segments[j];
+          if (!candidate) continue;
+          if (ignored.has(candidate.toLowerCase())) continue;
+          if (looksLikeGhlId(candidate)) return candidate;
+        }
+      }
+      return '';
+    }
+
+    const contactId = contactFromQuery || findIdAfter('contacts');
+    const conversationId =
+      conversationFromQuery || findIdAfter('conversations');
+
+    return {
+      contactId: contactId && looksLikeGhlId(contactId) ? contactId : '',
+      conversationId:
+        conversationId && looksLikeGhlId(conversationId) ? conversationId : ''
+    };
+  }
+
+  async function fetchLeadPhoneByEdge() {
+    window._zaptosVoipGHL_debug.contactCalls =
+      window._zaptosVoipGHL_debug.contactCalls || [];
+
+    const locationId = getLocationId();
+    if (!locationId) return null;
+
+    const ids = extractEntityIdsFromUrl();
+    if (!ids.contactId && !ids.conversationId) return null;
+
+    try {
+      const url = new URL(INSTANCE_PICKER_URL);
+      url.searchParams.set('location_id', locationId);
+      if (ids.contactId) url.searchParams.set('contact_id', ids.contactId);
+      if (ids.conversationId) {
+        url.searchParams.set('conversation_id', ids.conversationId);
+      }
+
+      const resp = await fetch(url.toString(), {
+        method: 'GET',
+        credentials: 'omit'
+      });
+      const text = await resp.text().catch(() => null);
+      const json = parseJsonSafe(text);
+
+      window._zaptosVoipGHL_debug.contactCalls.push({
+        url: url.toString(),
+        status: resp.status,
+        ok: resp.ok,
+        text,
+        json
+      });
+
+      if (!resp.ok || !json) return null;
+
+      const phoneRaw =
+        json.phone ||
+        (json.contact && json.contact.phone) ||
+        (json.data && json.data.phone) ||
+        null;
+      return normalizePhone(phoneRaw);
+    } catch (e) {
+      errLog('fetchLeadPhoneByEdge error', e);
       return null;
     }
   }
@@ -396,12 +516,19 @@
       .map((item) => String(item.instance_name || '').trim())
       .filter(Boolean);
 
+    const instances = selectedInstances.map((item) => ({
+      id: getInstanceIdentity(item),
+      name: String(item.instance_name || '').trim(),
+      token: String(item.token || '').trim()
+    }));
+
     return {
       tokens,
       token: tokens[0],
       source: 'instances-selected',
       instanceIds,
-      instanceNames
+      instanceNames,
+      instances
     };
   }
 
@@ -567,6 +694,7 @@
 
     wavoipActiveToken = null;
     wavoipActiveTokens = [];
+    wavoipActiveInstances = [];
     wavoipConnectedLocationId = null;
     wavoipConnectedInstanceIds = [];
     wavoipReadyPromise = null;
@@ -641,7 +769,9 @@
     }
   }
 
-  async function initWavoipWebphone(forcePromptToken) {
+  async function initWavoipWebphone(forcePromptToken, options) {
+    const opts = options || {};
+    const keepCurrentConnections = !!opts.keepCurrentConnections;
     const currentLocationId = getLocationId();
     if (!currentLocationId) {
       throw new Error(
@@ -691,6 +821,13 @@
 
     await wavoipReadyPromise;
 
+    // Quando solicitado, preserva as conexoes ativas para nao alterar os numeros
+    // que estao recebendo chamadas no webphone geral da subconta.
+    if (keepCurrentConnections && wavoipActiveTokens.length) {
+      enforceWavoipWidgetButtonHidden();
+      return true;
+    }
+
     // Sempre abre seletor de instancias a cada clique
     const resolved = await resolveTokenFlow();
     if (!resolved || !resolved.tokens || !resolved.tokens.length) {
@@ -707,6 +844,29 @@
     const nextInstanceIds = (resolved.instanceIds || [])
       .map((id) => String(id || '').trim())
       .filter(Boolean);
+    const nextInstances = [];
+    const seenInstanceTokens = new Set();
+    for (const item of resolved.instances || []) {
+      const token = String((item && item.token) || '').trim();
+      if (!token || seenInstanceTokens.has(token)) continue;
+      seenInstanceTokens.add(token);
+      nextInstances.push({
+        token,
+        id: String((item && item.id) || '').trim(),
+        name: String((item && item.name) || '').trim()
+      });
+    }
+    if (!nextInstances.length) {
+      for (let i = 0; i < nextTokens.length; i++) {
+        const token = nextTokens[i];
+        const name = String((resolved.instanceNames || [])[i] || '').trim();
+        nextInstances.push({
+          token,
+          id: String((nextInstanceIds || [])[i] || '').trim(),
+          name
+        });
+      }
+    }
 
     const shouldReconnect =
       wavoipConnectedLocationId !== currentLocationId ||
@@ -761,12 +921,83 @@
       wavoipConnectedInstanceIds = nextInstanceIds;
     }
 
+    wavoipActiveInstances = nextInstances;
+
     enforceWavoipWidgetButtonHidden();
     return true;
   }
 
+  function getActiveCallInstanceOptions() {
+    const options = [];
+    const seen = new Set();
+
+    for (const item of wavoipActiveInstances || []) {
+      const token = String((item && item.token) || '').trim();
+      if (!token || seen.has(token)) continue;
+      seen.add(token);
+      options.push({
+        token,
+        id: String((item && item.id) || '').trim(),
+        name: String((item && item.name) || '').trim()
+      });
+    }
+
+    if (!options.length) {
+      for (const tokenRaw of wavoipActiveTokens || []) {
+        const token = String(tokenRaw || '').trim();
+        if (!token || seen.has(token)) continue;
+        seen.add(token);
+        options.push({ token, id: '', name: '' });
+      }
+    }
+
+    for (let i = 0; i < options.length; i++) {
+      if (!options[i].name) {
+        options[i].name = `Instancia ${i + 1}`;
+      }
+    }
+
+    return options;
+  }
+
+  async function chooseOutgoingCallToken() {
+    const options = getActiveCallInstanceOptions();
+    if (!options.length) {
+      throw new Error('Nenhuma instancia VOIP ativa para originar a ligacao.');
+    }
+
+    if (options.length === 1) {
+      return options[0].token;
+    }
+
+    const optionsText = options
+      .map((item, index) => `${index + 1}) ${item.name}`)
+      .join('\n');
+
+    while (true) {
+      const typed = prompt(
+        `Escolha de qual instancia deseja ligar:\n\n${optionsText}\n\nDigite o numero da instancia:`,
+        '1'
+      );
+
+      if (typed == null) return null;
+
+      const selectedIndex = Number(String(typed).trim());
+      if (
+        !Number.isFinite(selectedIndex) ||
+        selectedIndex < 1 ||
+        selectedIndex > options.length
+      ) {
+        alert('Selecao invalida. Escolha um numero da lista.');
+        continue;
+      }
+
+      return options[selectedIndex - 1].token;
+    }
+  }
+
   async function startVoipLeadCall(phone) {
-    await initWavoipWebphone(false);
+    await initWavoipWebphone(false, { keepCurrentConnections: true });
 
     if (!window.wavoip || !window.wavoip.call) {
       throw new Error('Modulo de chamadas VOIP indisponivel.');
@@ -787,10 +1018,30 @@
       return { ok: true, started: false, reason: 'start-fn-missing' };
     }
 
-    const opts =
-      wavoipActiveTokens && wavoipActiveTokens.length
-        ? { fromTokens: wavoipActiveTokens }
-        : null;
+    const selectedToken = await chooseOutgoingCallToken();
+    if (selectedToken == null) {
+      return { ok: false, started: false, reason: 'user-cancel' };
+    }
+
+    if (
+      window.wavoip &&
+      window.wavoip.device &&
+      typeof window.wavoip.device.add === 'function'
+    ) {
+      try {
+        // Reforca o token escolhido sem desconectar os demais.
+        window.wavoip.device.add(selectedToken);
+      } catch (e) {
+        log('device.add selected token failed', selectedToken, e);
+      }
+    }
+
+    const opts = selectedToken
+      ? {
+          fromTokens: [selectedToken],
+          fromToken: selectedToken
+        }
+      : null;
     const startPromise = opts ? startFn(phone, opts) : startFn(phone);
 
     if (
@@ -816,7 +1067,7 @@
   }
 
   async function openVoipForManualDial(message) {
-    await initWavoipWebphone(false);
+    await initWavoipWebphone(false, { keepCurrentConnections: true });
 
     if (window.wavoip && window.wavoip.widget) {
       if (typeof window.wavoip.widget.open === 'function') {
@@ -1085,8 +1336,11 @@
     btn.style.pointerEvents = 'none';
 
     try {
-      const { phone } = extractContactInfoNewUI();
-      const finalPhone = normalizePhone(phone);
+      let finalPhone = await fetchLeadPhoneByEdge();
+      if (!finalPhone) {
+        const extracted = extractContactInfoNewUI();
+        finalPhone = normalizePhone(extracted && extracted.phone);
+      }
 
       if (!finalPhone) {
         await openVoipForManualDial(
@@ -1097,6 +1351,9 @@
 
       const callResult = await startVoipLeadCall(finalPhone);
       if (callResult && callResult.started === false) {
+        if (callResult.reason === 'user-cancel') {
+          return;
+        }
         await openVoipForManualDial(
           'Nao foi possivel iniciar a ligacao automaticamente. Use o VOIP para discagem manual.'
         );
