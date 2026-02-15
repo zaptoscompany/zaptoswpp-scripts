@@ -16,8 +16,7 @@
   const SESSION_KEYS = {
     token: 'zaptosvoip_token_user_override',
     apiKey: 'zaptosvoip_instance_api_key',
-    loc: 'zaptosvoip_location_id',
-    instanceId: 'zaptosvoip_instance_id'
+    loc: 'zaptosvoip_location_id'
   };
 
   const BUTTON_ID = 'zaptos-voip-button-v2';
@@ -26,17 +25,13 @@
   const CALL_PAGE_URL = 'https://voip.zaptoswpp.com/call/';
   const WAVOIP_SCRIPT_URL =
     'https://cdn.jsdelivr.net/npm/@wavoip/wavoip-webphone/dist/index.umd.min.js';
-  const INSTANCE_PICKER_URL =
-    'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/get-voip-instances';
-  const SELECTED_INSTANCE_MAP_KEY = 'zaptos_voip_selected_instance_by_location';
+  const WAVOIP_TOKEN_KEY = 'zaptos_wavoip_user_token';
   const WAVOIP_HEADER_SLOT_ID = 'whatsAppHeaderSlotShared';
 
   let wavoipScriptPromise = null;
   let wavoipReadyPromise = null;
   let wavoipRendered = false;
   let wavoipActiveToken = null;
-  let wavoipConnectedLocationId = null;
-  let wavoipConnectedInstanceId = null;
 
   const log = (...a) => {
     if (DEBUG) console.log('[ZaptosVoip][v2]', ...a);
@@ -44,12 +39,7 @@
   const errLog = (...a) => console.error('[ZaptosVoip][v2]', ...a);
 
   window._zaptosVoipGHL_debug =
-    window._zaptosVoipGHL_debug || {
-      edgeCalls: [],
-      instanceCalls: [],
-      lastResolve: null,
-      lastScope: null
-    };
+    window._zaptosVoipGHL_debug || { edgeCalls: [], lastResolve: null };
 
   // ----------- helpers básicos -----------
 
@@ -68,15 +58,12 @@
   function getLocationId() {
     try {
       const p = location.pathname || '';
-      const m = p.match(/\/location\/([^/]+)/i);
+      const m =
+        p.match(/\/location\/([^/]+)/i) || p.match(/\/locations\/([^/]+)/i);
       return m ? m[1] : null;
     } catch {
       return null;
     }
-  }
-
-  function isLocationScope() {
-    return !!getLocationId();
   }
 
   // ----------- chamada para pegar token (API KEY → token) -----------
@@ -174,321 +161,56 @@
     }
   }
 
-  function parseJsonSafe(text) {
-    if (!text) return null;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
-  }
-
-  function getInstanceIdentity(instance) {
-    if (!instance) return '';
-    const id =
-      instance.instance_id ||
-      instance.instanceId ||
-      instance.id ||
-      instance.instance_name ||
-      instance.name ||
-      '';
-    return String(id || '').trim();
-  }
-
-  function loadSelectedInstanceMap() {
-    try {
-      const raw = localStorage.getItem(SELECTED_INSTANCE_MAP_KEY);
-      if (!raw) return {};
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return {};
-      }
-      return parsed;
-    } catch {
-      return {};
-    }
-  }
-
-  function saveSelectedInstanceMap(map) {
-    try {
-      localStorage.setItem(SELECTED_INSTANCE_MAP_KEY, JSON.stringify(map || {}));
-    } catch {
-      /* ignore storage failures */
-    }
-  }
-
-  function getSavedSelectedInstance(locationId) {
-    if (!locationId) return null;
-    const map = loadSelectedInstanceMap();
-    const raw = map[locationId];
-    if (!raw || typeof raw !== 'object') return null;
-    const id = String(raw.id || '').trim();
-    const name = String(raw.name || '').trim();
-    if (!id && !name) return null;
-    return { id: id || name, name: name || id };
-  }
-
-  function saveSelectedInstance(locationId, instance) {
-    if (!locationId || !instance) return;
-    const id = getInstanceIdentity(instance);
-    const name = String(
-      instance.instance_name || instance.instanceName || instance.name || id
-    ).trim();
-    if (!id) return;
-    const map = loadSelectedInstanceMap();
-    map[locationId] = { id, name };
-    saveSelectedInstanceMap(map);
-  }
-
-  function clearSavedSelectedInstance(locationId) {
-    if (!locationId) return;
-    const map = loadSelectedInstanceMap();
-    if (!map[locationId]) return;
-    delete map[locationId];
-    saveSelectedInstanceMap(map);
-  }
-
-  function extractInstanceRows(payload) {
-    if (!payload) return [];
-    if (Array.isArray(payload)) return payload;
-    if (Array.isArray(payload.instances)) return payload.instances;
-    if (Array.isArray(payload.data)) return payload.data;
-    if (payload.data && Array.isArray(payload.data.instances)) {
-      return payload.data.instances;
-    }
-    return [];
-  }
-
-  function normalizeInstanceRows(rows) {
-    if (!Array.isArray(rows)) return [];
-    const normalized = [];
-    for (const row of rows) {
-      const name = String(
-        row &&
-          (row.instance_name ||
-            row.instanceName ||
-            row.name ||
-            row.instance ||
-            row.label ||
-            '')
-      ).trim();
-      if (!name) continue;
-
-      const id = getInstanceIdentity(row) || name;
-      const apiKey = String(
-        (row &&
-          (row.api_key || row.instance_api_key || row.apiKey || row.apikey)) ||
-          ''
-      ).trim();
-      const token = String(
-        (row && (row.token || row.access_token || row.webphone_token)) || ''
-      ).trim();
-
-      normalized.push({
-        id,
-        instance_id: id,
-        instance_name: name,
-        api_key: apiKey,
-        token
-      });
-    }
-    return normalized;
-  }
-
-  async function fetchVoipInstances(locationId) {
-    window._zaptosVoipGHL_debug.instanceCalls =
-      window._zaptosVoipGHL_debug.instanceCalls || [];
-
-    if (!locationId) return [];
-
-    const runFetch = async (requestUrl, init, via) => {
-      const response = await fetch(requestUrl, init);
-      const text = await response.text().catch(() => null);
-      const json = parseJsonSafe(text);
-
-      const record = {
-        url: requestUrl,
-        status: response.status,
-        ok: response.ok,
-        text,
-        json,
-        via
-      };
-      window._zaptosVoipGHL_debug.instanceCalls.push(record);
-      return { response, text, json, record };
-    };
-
-    try {
-      const url = new URL(INSTANCE_PICKER_URL);
-      url.searchParams.set('location_id', locationId);
-
-      const first = await runFetch(
-        url.toString(),
-        { method: 'GET', credentials: 'omit' },
-        'query'
-      );
-
-      let instances = normalizeInstanceRows(extractInstanceRows(first.json));
-
-      if (!instances.length) {
-        const fallback = await runFetch(
-          INSTANCE_PICKER_URL,
-          {
-            method: 'GET',
-            credentials: 'omit',
-            headers: { 'x-wavoip-location-id': locationId }
-          },
-          'header-location'
-        );
-        instances = normalizeInstanceRows(extractInstanceRows(fallback.json));
-
-        if (!fallback.response.ok && !instances.length) {
-          return [];
-        }
-      }
-
-      return instances;
-    } catch (e) {
-      errLog('fetchVoipInstances error', e);
-      return [];
-    }
-  }
-
-  async function chooseVoipInstanceForLocation(locationId, forcePrompt) {
-    const instances = await fetchVoipInstances(locationId);
-
-    if (!instances.length) {
-      alert(
-        'Nenhuma instancia VOIP foi encontrada para esta subconta. Verifique o cadastro da location.'
-      );
-      return null;
-    }
-
-    const saved = getSavedSelectedInstance(locationId);
-    const savedMatch = saved
-      ? instances.find((item) => {
-          const id = getInstanceIdentity(item);
-          return id === saved.id || item.instance_name === saved.name;
-        })
-      : null;
-
-    if (savedMatch && !forcePrompt) {
-      return savedMatch;
-    }
-
-    if (instances.length === 1 && !forcePrompt) {
-      const single = instances[0];
-      saveSelectedInstance(locationId, single);
-      return single;
-    }
-
-    const optionsText = instances
-      .map((item, index) => `${index + 1}) ${item.instance_name}`)
-      .join('\n');
-
-    const defaultOption = savedMatch
-      ? String(instances.indexOf(savedMatch) + 1)
-      : '';
-
-    const typed = prompt(
-      `Escolha a instancia VOIP desta subconta:\n\n${optionsText}\n\nDigite o numero da instancia:`,
-      defaultOption
-    );
-
-    if (typed == null) return null;
-
-    const selectedIndex = Number(String(typed).trim());
-    if (
-      !Number.isFinite(selectedIndex) ||
-      selectedIndex < 1 ||
-      selectedIndex > instances.length
-    ) {
-      alert('Selecao invalida. Tente novamente.');
-      return null;
-    }
-
-    const selected = instances[selectedIndex - 1];
-    saveSelectedInstance(locationId, selected);
-    return selected;
-  }
-
-  async function resolveTokenFlow(forcePromptInstance) {
+  async function resolveTokenFlow() {
     window._zaptosVoipGHL_debug.lastResolve = { at: Date.now() };
 
-    const locationId = getLocationId();
-    if (!locationId) {
-      return { token: null, source: 'outside-location' };
-    }
-
-    const selected = await chooseVoipInstanceForLocation(
-      locationId,
-      !!forcePromptInstance
-    );
-    if (!selected) {
-      return { token: null, source: 'user-skip' };
-    }
-
-    const selectedInstanceId = getInstanceIdentity(selected);
+    // 1) token já salvo
     const storedToken = sessionStorage.getItem(SESSION_KEYS.token);
-    const storedLoc = sessionStorage.getItem(SESSION_KEYS.loc);
-    const storedInstanceId = sessionStorage.getItem(SESSION_KEYS.instanceId);
-
-    if (
-      !forcePromptInstance &&
-      storedToken &&
-      storedLoc === locationId &&
-      storedInstanceId === selectedInstanceId
-    ) {
-      return {
-        token: storedToken,
-        source: 'session',
-        instanceId: selectedInstanceId,
-        instanceName: selected.instance_name
-      };
+    if (storedToken) {
+      log('using token from session');
+      return { token: storedToken, source: 'session' };
     }
 
-    let token = selected.token ? String(selected.token).trim() : '';
-    let tokenMeta = null;
+    const locationId = getLocationId();
+    const savedApiKey = sessionStorage.getItem(SESSION_KEYS.apiKey);
 
-    if (!token) {
-      const apiKey = selected.api_key ? String(selected.api_key).trim() : '';
-      if (!apiKey) {
-        alert(
-          'A instancia selecionada nao possui API key valida para gerar o token do VOIP.'
-        );
-        return { token: null, source: 'instance-without-apikey' };
+    // 2) já tem apiKey salva
+    if (savedApiKey && locationId) {
+      const r = await fetchToken(locationId, savedApiKey);
+      if (r && r.token) {
+        sessionStorage.setItem(SESSION_KEYS.token, r.token);
+        sessionStorage.setItem(SESSION_KEYS.loc, locationId);
+        return { token: r.token, source: 'stored-api-key', meta: r };
+      } else {
+        log('stored API key failed, clearing', r);
+        sessionStorage.removeItem(SESSION_KEYS.apiKey);
+        sessionStorage.removeItem(SESSION_KEYS.loc);
       }
-
-      tokenMeta = await fetchToken(locationId, apiKey);
-      if (!tokenMeta || !tokenMeta.token) {
-        alert(
-          'Nao foi possivel obter o token da instancia selecionada. Tente selecionar outra instancia.'
-        );
-        return { token: null, source: 'instance-token-failed', meta: tokenMeta };
-      }
-
-      token = tokenMeta.token;
-      sessionStorage.setItem(SESSION_KEYS.apiKey, apiKey);
     }
 
-    sessionStorage.setItem(SESSION_KEYS.token, token);
-    sessionStorage.setItem(SESSION_KEYS.loc, locationId);
-    sessionStorage.setItem(SESSION_KEYS.instanceId, selectedInstanceId);
+    // 3) pedir API KEY
+    const apiKey = prompt('Insira a API KEY da instância');
+    if (!apiKey) return { token: null, source: 'user-skip' };
 
-    return {
-      token,
-      source: tokenMeta ? 'instance-api-key' : 'instance-token',
-      instanceId: selectedInstanceId,
-      instanceName: selected.instance_name,
-      meta: tokenMeta
-    };
+    const locId = locationId || getLocationId() || '';
+    const r = await fetchToken(locId.trim(), apiKey.trim());
+    window._zaptosVoipGHL_debug.lastResolve.result = r;
+
+    if (r && r.token) {
+      sessionStorage.setItem(SESSION_KEYS.apiKey, apiKey.trim());
+      sessionStorage.setItem(SESSION_KEYS.loc, locId.trim());
+      sessionStorage.setItem(SESSION_KEYS.token, r.token);
+      return { token: r.token, source: 'api-key', meta: r };
+    } else {
+      alert('Não foi possível obter o token. Verifique a API KEY da instância.');
+      return { token: null, source: 'api-key-failed', meta: r };
+    }
   }
 
   function clearSaved() {
     sessionStorage.removeItem(SESSION_KEYS.apiKey);
     sessionStorage.removeItem(SESSION_KEYS.loc);
     sessionStorage.removeItem(SESSION_KEYS.token);
-    sessionStorage.removeItem(SESSION_KEYS.instanceId);
     log('credenciais salvas limpas');
   }
 
@@ -611,55 +333,54 @@
     return phoneTag.parentElement;
   }
 
-  function disconnectWavoipSession(reason) {
-    try {
-      if (
-        window.wavoip &&
-        window.wavoip.widget &&
-        typeof window.wavoip.widget.close === 'function'
-      ) {
-        window.wavoip.widget.close();
-      }
-    } catch (e) {
-      log('widget close failed', e);
-    }
+  function getWavoipTokenStorageKey() {
+    return WAVOIP_TOKEN_KEY;
+  }
 
+  function getSavedWavoipToken() {
     try {
-      if (window.wavoip && window.wavoip.device) {
-        if (
-          wavoipActiveToken &&
-          typeof window.wavoip.device.remove === 'function'
-        ) {
-          window.wavoip.device.remove(wavoipActiveToken);
-        } else if (typeof window.wavoip.device.removeAll === 'function') {
-          window.wavoip.device.removeAll();
-        }
-      }
-    } catch (e) {
-      log('device disconnect failed', e);
+      const raw = localStorage.getItem(getWavoipTokenStorageKey());
+      return raw ? raw.trim() : '';
+    } catch {
+      return '';
     }
+  }
 
+  function saveWavoipToken(token) {
+    const clean = (token || '').trim();
+    if (!clean) return;
+    try {
+      localStorage.setItem(getWavoipTokenStorageKey(), clean);
+    } catch {
+      /* ignore storage failures */
+    }
+  }
+
+  function clearWavoipToken() {
+    try {
+      localStorage.removeItem(getWavoipTokenStorageKey());
+    } catch {
+      /* ignore storage failures */
+    }
     wavoipActiveToken = null;
-    wavoipConnectedLocationId = null;
-    wavoipConnectedInstanceId = null;
     wavoipReadyPromise = null;
-    clearSaved();
-    log('VOIP desconectado', reason || 'manual');
   }
 
-  function clearWavoipToken(clearSelectionForCurrentLocation) {
-    if (clearSelectionForCurrentLocation) {
-      const locationId = getLocationId();
-      if (locationId) {
-        clearSavedSelectedInstance(locationId);
-      }
-    }
-    disconnectWavoipSession('clear');
+  function requestWavoipToken() {
+    const saved = getSavedWavoipToken();
+    const typed = prompt('Insira o token do Webphone VOIP:', saved || '');
+    if (!typed) return null;
+    const token = typed.trim();
+    if (!token) return null;
+    saveWavoipToken(token);
+    return token;
   }
 
-  async function requestWavoipToken() {
-    const resolved = await resolveTokenFlow(true);
-    return resolved && resolved.token ? resolved.token : null;
+  function ensureWavoipToken(forcePrompt) {
+    if (forcePrompt) return requestWavoipToken();
+    const saved = getSavedWavoipToken();
+    if (saved) return saved;
+    return requestWavoipToken();
   }
 
   function loadWavoipScript() {
@@ -715,90 +436,55 @@
   }
 
   async function initWavoipWebphone(forcePromptToken) {
-    const currentLocationId = getLocationId();
-    if (!currentLocationId) {
-      throw new Error(
-        'VOIP disponivel apenas dentro de subcontas (URL com /location/...).'
-      );
+    if (forcePromptToken) {
+      clearWavoipToken();
     }
 
-    if (
-      wavoipConnectedLocationId &&
-      wavoipConnectedLocationId !== currentLocationId
-    ) {
-      disconnectWavoipSession('location-changed');
-    }
+    if (wavoipReadyPromise) return wavoipReadyPromise;
 
-    if (!wavoipReadyPromise) {
-      wavoipReadyPromise = (async () => {
-        await loadWavoipScript();
+    wavoipReadyPromise = (async () => {
+      await loadWavoipScript();
 
-        if (
-          !window.wavoipWebphone ||
-          typeof window.wavoipWebphone.render !== 'function'
-        ) {
-          throw new Error('Biblioteca VOIP indisponivel.');
-        }
-
-        if (!wavoipRendered) {
-          await window.wavoipWebphone.render({
-            widget: {
-              showWidgetButton: false,
-              startOpen: false
-            }
-          });
-          wavoipRendered = true;
-        }
-
-        if (!window.wavoip || !window.wavoip.device) {
-          throw new Error('Webphone VOIP nao inicializou.');
-        }
-
-        enforceWavoipWidgetButtonHidden();
-        return true;
-      })().catch((e) => {
-        wavoipReadyPromise = null;
-        throw e;
-      });
-    }
-
-    await wavoipReadyPromise;
-
-    const resolved = await resolveTokenFlow(!!forcePromptToken);
-    if (!resolved || !resolved.token) {
-      throw new Error('Selecao de instancia cancelada ou sem token disponivel.');
-    }
-
-    const token = resolved.token;
-    const resolvedInstanceId = String(resolved.instanceId || '').trim();
-
-    const shouldReconnect =
-      wavoipActiveToken !== token ||
-      wavoipConnectedLocationId !== currentLocationId ||
-      (resolvedInstanceId && wavoipConnectedInstanceId !== resolvedInstanceId);
-
-    if (shouldReconnect) {
       if (
-        wavoipActiveToken &&
-        wavoipActiveToken !== token &&
-        window.wavoip &&
-        window.wavoip.device &&
-        typeof window.wavoip.device.remove === 'function'
+        !window.wavoipWebphone ||
+        typeof window.wavoipWebphone.render !== 'function'
       ) {
-        try {
-          window.wavoip.device.remove(wavoipActiveToken);
-        } catch (e) {
-          log('device.remove previous token failed', e);
-        }
+        throw new Error('Biblioteca VOIP indisponivel.');
       }
-      window.wavoip.device.add(token);
-      wavoipActiveToken = token;
-      wavoipConnectedLocationId = currentLocationId;
-      wavoipConnectedInstanceId = resolvedInstanceId || null;
-    }
 
-    enforceWavoipWidgetButtonHidden();
-    return true;
+      if (!wavoipRendered) {
+        await window.wavoipWebphone.render({
+          widget: {
+            showWidgetButton: false,
+            startOpen: false
+          }
+        });
+        wavoipRendered = true;
+      }
+
+      if (!window.wavoip || !window.wavoip.device) {
+        throw new Error('Webphone VOIP nao inicializou.');
+      }
+
+      const token = ensureWavoipToken(forcePromptToken);
+      if (!token) {
+        throw new Error('Token do VOIP nao informado.');
+      }
+
+      if (wavoipActiveToken !== token) {
+        window.wavoip.device.add(token);
+        wavoipActiveToken = token;
+      }
+
+      enforceWavoipWidgetButtonHidden();
+
+      return true;
+    })().catch((e) => {
+      wavoipReadyPromise = null;
+      throw e;
+    });
+
+    return wavoipReadyPromise;
   }
 
   async function startVoipLeadCall(phone) {
@@ -1052,7 +738,6 @@
 
   async function onClickWavoipButton(ev) {
     ev && ev.preventDefault && ev.preventDefault();
-    if (!isLocationScope()) return;
     const btn =
       (ev && ev.currentTarget) || document.getElementById(WAVOIP_BUTTON_ID);
     if (!btn) return;
@@ -1081,9 +766,7 @@
       enforceWavoipWidgetButtonHidden();
     } catch (e) {
       errLog('onClickWavoipButton error', e);
-      const msg = String((e && e.message) || e || '');
-      if (/cancelada/i.test(msg)) return;
-      alert('Erro ao abrir Webphone VOIP: ' + msg);
+      alert('Erro ao abrir Webphone VOIP: ' + (e && e.message ? e.message : e));
     } finally {
       btn.dataset.busy = '0';
       btn.style.opacity = origOpacity;
@@ -1093,19 +776,17 @@
 
   async function onContextMenuWavoipButton(ev) {
     ev && ev.preventDefault && ev.preventDefault();
-    if (!isLocationScope()) return;
     try {
       await initWavoipWebphone(true);
-      alert('Instancia VOIP atualizada para esta subconta.');
+      alert('Token do VOIP atualizado.');
     } catch (e) {
-      if (e && /cancelada/i.test(String(e.message || e))) return;
+      if (e && /nao informado/i.test(String(e.message || e))) return;
       errLog('onContextMenuWavoipButton error', e);
-      alert('Nao foi possivel atualizar a instancia do VOIP.');
+      alert('Nao foi possivel atualizar o token do VOIP.');
     }
   }
   async function onClickCallButton(ev) {
     ev && ev.preventDefault && ev.preventDefault();
-    if (!isLocationScope()) return;
     const btn =
       (ev && ev.currentTarget) || document.getElementById(BUTTON_ID);
     if (!btn) return;
@@ -1136,9 +817,7 @@
       }
     } catch (e) {
       errLog('onClickCallButton error', e);
-      const msg = String((e && e.message) || e || '');
-      if (/cancelada/i.test(msg)) return;
-      alert('Erro ao iniciar chamada: ' + msg);
+      alert('Erro ao iniciar chamada: ' + (e && e.message ? e.message : e));
     } finally {
       btn.dataset.busy = '0';
       btn.style.opacity = origOpacity;
@@ -1148,47 +827,8 @@
 
   // ----------- garantir que o botão exista sempre -----------
 
-  function removeInjectedButtons() {
-    const callBtn = document.getElementById(BUTTON_ID);
-    if (callBtn) callBtn.remove();
-
-    const voipBtn = document.getElementById(WAVOIP_BUTTON_ID);
-    if (voipBtn) voipBtn.remove();
-  }
-
-  function syncScopeState() {
-    const locationId = getLocationId();
-    window._zaptosVoipGHL_debug.lastScope = {
-      at: Date.now(),
-      href: location.href,
-      pathname: location.pathname,
-      locationId
-    };
-
-    if (!locationId) {
-      if (wavoipConnectedLocationId || wavoipActiveToken) {
-        disconnectWavoipSession('outside-location');
-      }
-      return { allowed: false, locationId: null };
-    }
-
-    if (
-      wavoipConnectedLocationId &&
-      wavoipConnectedLocationId !== locationId
-    ) {
-      disconnectWavoipSession('location-changed');
-    }
-
-    return { allowed: true, locationId };
-  }
   function ensureButton() {
     try {
-      const scope = syncScopeState();
-      if (!scope.allowed) {
-        removeInjectedButtons();
-        return;
-      }
-
       if (!document.getElementById(BUTTON_ID)) {
         createGradientButton();
       }
@@ -1211,10 +851,8 @@
   window._zaptosVoipGHL_V2 = {
     resolveTokenFlow,
     fetchToken,
-    fetchVoipInstances,
     clearSaved,
     clearWavoipToken,
-    disconnectWavoipSession,
     requestWavoipToken,
     initWavoipWebphone,
     startVoipLeadCall,
@@ -1224,5 +862,3 @@
   log('ZaptosVoip – Nova UI V2 inicializado');
 })();
 // ======================= Fim do ZaptosVoip – Nova UI GHL (V2) =======================
-
-
