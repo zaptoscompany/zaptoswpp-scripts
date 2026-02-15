@@ -34,16 +34,14 @@ function normalizeInstanceRow(row: Record<string, unknown>) {
     row.instance_name ?? row.name ?? row.instance ?? row.label
   );
   const instanceId = readString(row.instance_id ?? row.id ?? instanceName);
-  const apiKey = readString(
-    row.api_key ?? row.instance_api_key ?? row.apiKey ?? row.apikey
+  const token = readString(
+    row.wavoip_token ?? row.token ?? row.access_token ?? row.webphone_token
   );
-  const token = readString(row.token ?? row.access_token ?? row.webphone_token);
 
   return {
     id: instanceId || instanceName,
     instance_id: instanceId || instanceName,
     instance_name: instanceName,
-    api_key: apiKey || null,
     token: token || null
   };
 }

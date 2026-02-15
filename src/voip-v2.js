@@ -8,14 +8,9 @@
     'width=360,height=640,menubar=0,toolbar=0,location=0,status=0';
   const DEFAULT_COUNTRY = '55';
 
-  // URL que devolve o token de ligação
-  const TOKEN_URL =
-    'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/get-wavoip-token';
-
   // chaves usadas no sessionStorage
   const SESSION_KEYS = {
     token: 'zaptosvoip_token_user_override',
-    apiKey: 'zaptosvoip_instance_api_key',
     loc: 'zaptosvoip_location_id',
     instanceId: 'zaptosvoip_instance_id'
   };
@@ -35,8 +30,9 @@
   let wavoipReadyPromise = null;
   let wavoipRendered = false;
   let wavoipActiveToken = null;
+  let wavoipActiveTokens = [];
   let wavoipConnectedLocationId = null;
-  let wavoipConnectedInstanceId = null;
+  let wavoipConnectedInstanceIds = [];
 
   const log = (...a) => {
     if (DEBUG) console.log('[ZaptosVoip][v2]', ...a);
@@ -77,101 +73,6 @@
 
   function isLocationScope() {
     return !!getLocationId();
-  }
-
-  // ----------- chamada para pegar token (API KEY → token) -----------
-
-  async function fetchToken(locationId, instanceApiKey) {
-    window._zaptosVoipGHL_debug.edgeCalls =
-      window._zaptosVoipGHL_debug.edgeCalls || [];
-
-    if (!locationId || !instanceApiKey) {
-      return { token: null, status: 'missing-params' };
-    }
-
-    try {
-      // 1) GET com query params
-      const url = new URL(TOKEN_URL);
-      url.searchParams.set('location_id', locationId);
-      url.searchParams.set('api_key', instanceApiKey);
-
-      const resp = await fetch(url.toString(), {
-        method: 'GET',
-        credentials: 'omit'
-      });
-
-      const text = await resp.text().catch(() => null);
-      let json = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {
-        json = null;
-      }
-
-      const record = {
-        url: url.toString(),
-        status: resp.status,
-        ok: resp.ok,
-        text,
-        json
-      };
-      window._zaptosVoipGHL_debug.edgeCalls.push(record);
-      log('fetchToken query result', record);
-
-      const token =
-        (json &&
-          (json.token ||
-            json.access_token ||
-            (json.data && json.data.token))) ||
-        null;
-
-      if (token) {
-        return { token, status: 'ok-query', raw: json };
-      }
-
-      // 2) fallback: GET com headers (apikey + location)
-      try {
-        const r2 = await fetch(TOKEN_URL, {
-          method: 'GET',
-          credentials: 'omit',
-          headers: {
-            apikey: instanceApiKey,
-            'x-wavoip-location-id': locationId
-          }
-        });
-        const t2 = await r2.text().catch(() => null);
-        let j2 = null;
-        try {
-          j2 = t2 ? JSON.parse(t2) : null;
-        } catch {
-          j2 = null;
-        }
-        window._zaptosVoipGHL_debug.edgeCalls.push({
-          url: TOKEN_URL,
-          status: r2.status,
-          ok: r2.ok,
-          text: t2,
-          json: j2,
-          via: 'header-apikey'
-        });
-        const token2 =
-          (j2 &&
-            (j2.token ||
-              j2.access_token ||
-              (j2.data && j2.data.token))) ||
-          null;
-        if (token2) {
-          return { token: token2, status: 'ok-header', raw: j2 };
-        }
-      } catch (e) {
-        /* ignora fallback falho */
-      }
-
-      return { token: null, status: 'no-token-found', raw: json || text };
-    } catch (e) {
-      errLog('fetchToken error', e);
-      return { token: null, status: 'error', error: String(e) };
-    }
   }
 
   function parseJsonSafe(text) {
@@ -217,30 +118,48 @@
     }
   }
 
-  function getSavedSelectedInstance(locationId) {
-    if (!locationId) return null;
+  function getSavedSelectedInstanceIds(locationId) {
+    if (!locationId) return [];
     const map = loadSelectedInstanceMap();
     const raw = map[locationId];
-    if (!raw || typeof raw !== 'object') return null;
-    const id = String(raw.id || '').trim();
-    const name = String(raw.name || '').trim();
-    if (!id && !name) return null;
-    return { id: id || name, name: name || id };
+    if (!raw || typeof raw !== 'object') return [];
+
+    // backward compatibility: formato antigo { id, name }
+    if (raw.id) {
+      const oldId = String(raw.id).trim();
+      return oldId ? [oldId] : [];
+    }
+
+    if (!Array.isArray(raw.ids)) return [];
+    return raw.ids
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
   }
 
-  function saveSelectedInstance(locationId, instance) {
-    if (!locationId || !instance) return;
-    const id = getInstanceIdentity(instance);
-    const name = String(
-      instance.instance_name || instance.instanceName || instance.name || id
-    ).trim();
-    if (!id) return;
+  function saveSelectedInstances(locationId, instances) {
+    if (!locationId || !Array.isArray(instances) || !instances.length) return;
+
+    const ids = instances
+      .map((instance) => getInstanceIdentity(instance))
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
+
+    if (!ids.length) return;
+
+    const names = instances
+      .map((instance) =>
+        String(
+          instance.instance_name || instance.instanceName || instance.name || ''
+        ).trim()
+      )
+      .filter(Boolean);
+
     const map = loadSelectedInstanceMap();
-    map[locationId] = { id, name };
+    map[locationId] = { ids, names };
     saveSelectedInstanceMap(map);
   }
 
-  function clearSavedSelectedInstance(locationId) {
+  function clearSavedSelectedInstances(locationId) {
     if (!locationId) return;
     const map = loadSelectedInstanceMap();
     if (!map[locationId]) return;
@@ -275,20 +194,19 @@
       if (!name) continue;
 
       const id = getInstanceIdentity(row) || name;
-      const apiKey = String(
-        (row &&
-          (row.api_key || row.instance_api_key || row.apiKey || row.apikey)) ||
-          ''
-      ).trim();
       const token = String(
-        (row && (row.token || row.access_token || row.webphone_token)) || ''
+        (row &&
+          (row.wavoip_token ||
+            row.token ||
+            row.access_token ||
+            row.webphone_token)) ||
+          ''
       ).trim();
 
       normalized.push({
         id,
         instance_id: id,
         instance_name: name,
-        api_key: apiKey,
         token
       });
     }
@@ -315,7 +233,7 @@
         via
       };
       window._zaptosVoipGHL_debug.instanceCalls.push(record);
-      return { response, text, json, record };
+      return { response, text, json };
     };
 
     try {
@@ -341,10 +259,6 @@
           'header-location'
         );
         instances = normalizeInstanceRows(extractInstanceRows(fallback.json));
-
-        if (!fallback.response.ok && !instances.length) {
-          return [];
-        }
       }
 
       return instances;
@@ -354,7 +268,46 @@
     }
   }
 
-  async function chooseVoipInstanceForLocation(locationId, forcePrompt) {
+  function parseInstanceSelection(typed, max) {
+    const normalized = String(typed || '').trim();
+    if (!normalized) return [];
+
+    const selected = new Set();
+    const parts = normalized.split(/[\s,;]+/).filter(Boolean);
+
+    for (const part of parts) {
+      if (/^\d+-\d+$/.test(part)) {
+        const [startRaw, endRaw] = part.split('-');
+        const start = Number(startRaw);
+        const end = Number(endRaw);
+        if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+        const min = Math.min(start, end);
+        const maxRange = Math.max(start, end);
+        for (let i = min; i <= maxRange; i++) {
+          if (i >= 1 && i <= max) selected.add(i);
+        }
+        continue;
+      }
+
+      const n = Number(part);
+      if (!Number.isFinite(n)) continue;
+      if (n >= 1 && n <= max) selected.add(n);
+    }
+
+    return Array.from(selected).sort((a, b) => a - b);
+  }
+
+  function arraysEqualAsSet(a, b) {
+    const aa = Array.from(new Set((a || []).map((v) => String(v || '').trim()).filter(Boolean))).sort();
+    const bb = Array.from(new Set((b || []).map((v) => String(v || '').trim()).filter(Boolean))).sort();
+    if (aa.length !== bb.length) return false;
+    for (let i = 0; i < aa.length; i++) {
+      if (aa[i] !== bb[i]) return false;
+    }
+    return true;
+  }
+
+  async function chooseVoipInstancesForLocation(locationId) {
     const instances = await fetchVoipInstances(locationId);
 
     if (!instances.length) {
@@ -364,128 +317,95 @@
       return null;
     }
 
-    const saved = getSavedSelectedInstance(locationId);
-    const savedMatch = saved
-      ? instances.find((item) => {
-          const id = getInstanceIdentity(item);
-          return id === saved.id || item.instance_name === saved.name;
-        })
-      : null;
+    const savedIds = getSavedSelectedInstanceIds(locationId);
+    const defaultIndexes = savedIds
+      .map((savedId) =>
+        instances.findIndex((item) => getInstanceIdentity(item) === savedId) + 1
+      )
+      .filter((index) => index > 0);
 
-    if (savedMatch && !forcePrompt) {
-      return savedMatch;
-    }
-
-    if (instances.length === 1 && !forcePrompt) {
-      const single = instances[0];
-      saveSelectedInstance(locationId, single);
-      return single;
-    }
+    const defaultSelection = defaultIndexes.join(',');
 
     const optionsText = instances
-      .map((item, index) => `${index + 1}) ${item.instance_name}`)
+      .map((item, index) => {
+        const status = item.token ? '' : ' (sem token)';
+        return `${index + 1}) ${item.instance_name}${status}`;
+      })
       .join('\n');
 
-    const defaultOption = savedMatch
-      ? String(instances.indexOf(savedMatch) + 1)
-      : '';
+    while (true) {
+      const typed = prompt(
+        `Escolha as instancias VOIP desta subconta (separadas por virgula):\n\n${optionsText}\n\nExemplo: 1,2,4`,
+        defaultSelection
+      );
 
-    const typed = prompt(
-      `Escolha a instancia VOIP desta subconta:\n\n${optionsText}\n\nDigite o numero da instancia:`,
-      defaultOption
-    );
+      if (typed == null) return null;
 
-    if (typed == null) return null;
+      const selectedIndexes = parseInstanceSelection(typed, instances.length);
+      if (!selectedIndexes.length) {
+        alert('Selecao invalida. Escolha ao menos uma instancia.');
+        continue;
+      }
 
-    const selectedIndex = Number(String(typed).trim());
-    if (
-      !Number.isFinite(selectedIndex) ||
-      selectedIndex < 1 ||
-      selectedIndex > instances.length
-    ) {
-      alert('Selecao invalida. Tente novamente.');
-      return null;
+      const selectedInstances = selectedIndexes.map((idx) => instances[idx - 1]);
+      const withoutToken = selectedInstances.filter((item) => !item.token);
+      if (withoutToken.length) {
+        const names = withoutToken.map((item) => item.instance_name).join(', ');
+        alert(
+          `As seguintes instancias nao possuem token e nao podem ser ativadas: ${names}`
+        );
+        continue;
+      }
+
+      saveSelectedInstances(locationId, selectedInstances);
+      return selectedInstances;
     }
-
-    const selected = instances[selectedIndex - 1];
-    saveSelectedInstance(locationId, selected);
-    return selected;
   }
 
-  async function resolveTokenFlow(forcePromptInstance) {
+  async function resolveTokenFlow() {
     window._zaptosVoipGHL_debug.lastResolve = { at: Date.now() };
 
     const locationId = getLocationId();
     if (!locationId) {
-      return { token: null, source: 'outside-location' };
+      return { tokens: [], source: 'outside-location' };
     }
 
-    const selected = await chooseVoipInstanceForLocation(
-      locationId,
-      !!forcePromptInstance
+    const selectedInstances = await chooseVoipInstancesForLocation(locationId);
+    if (!selectedInstances || !selectedInstances.length) {
+      return { tokens: [], source: 'user-skip' };
+    }
+
+    const tokens = Array.from(
+      new Set(
+        selectedInstances
+          .map((item) => String(item.token || '').trim())
+          .filter(Boolean)
+      )
     );
-    if (!selected) {
-      return { token: null, source: 'user-skip' };
+
+    if (!tokens.length) {
+      alert('Nao foi encontrado token valido nas instancias selecionadas.');
+      return { tokens: [], source: 'instance-without-token' };
     }
 
-    const selectedInstanceId = getInstanceIdentity(selected);
-    const storedToken = sessionStorage.getItem(SESSION_KEYS.token);
-    const storedLoc = sessionStorage.getItem(SESSION_KEYS.loc);
-    const storedInstanceId = sessionStorage.getItem(SESSION_KEYS.instanceId);
+    const instanceIds = selectedInstances
+      .map((item) => getInstanceIdentity(item))
+      .filter(Boolean);
 
-    if (
-      !forcePromptInstance &&
-      storedToken &&
-      storedLoc === locationId &&
-      storedInstanceId === selectedInstanceId
-    ) {
-      return {
-        token: storedToken,
-        source: 'session',
-        instanceId: selectedInstanceId,
-        instanceName: selected.instance_name
-      };
-    }
-
-    let token = selected.token ? String(selected.token).trim() : '';
-    let tokenMeta = null;
-
-    if (!token) {
-      const apiKey = selected.api_key ? String(selected.api_key).trim() : '';
-      if (!apiKey) {
-        alert(
-          'A instancia selecionada nao possui API key valida para gerar o token do VOIP.'
-        );
-        return { token: null, source: 'instance-without-apikey' };
-      }
-
-      tokenMeta = await fetchToken(locationId, apiKey);
-      if (!tokenMeta || !tokenMeta.token) {
-        alert(
-          'Nao foi possivel obter o token da instancia selecionada. Tente selecionar outra instancia.'
-        );
-        return { token: null, source: 'instance-token-failed', meta: tokenMeta };
-      }
-
-      token = tokenMeta.token;
-      sessionStorage.setItem(SESSION_KEYS.apiKey, apiKey);
-    }
-
-    sessionStorage.setItem(SESSION_KEYS.token, token);
-    sessionStorage.setItem(SESSION_KEYS.loc, locationId);
-    sessionStorage.setItem(SESSION_KEYS.instanceId, selectedInstanceId);
+    const instanceNames = selectedInstances
+      .map((item) => String(item.instance_name || '').trim())
+      .filter(Boolean);
 
     return {
-      token,
-      source: tokenMeta ? 'instance-api-key' : 'instance-token',
-      instanceId: selectedInstanceId,
-      instanceName: selected.instance_name,
-      meta: tokenMeta
+      tokens,
+      token: tokens[0],
+      source: 'instances-selected',
+      instanceIds,
+      instanceNames
     };
   }
 
   function clearSaved() {
-    sessionStorage.removeItem(SESSION_KEYS.apiKey);
     sessionStorage.removeItem(SESSION_KEYS.loc);
     sessionStorage.removeItem(SESSION_KEYS.token);
     sessionStorage.removeItem(SESSION_KEYS.instanceId);
@@ -627,10 +547,16 @@
     try {
       if (window.wavoip && window.wavoip.device) {
         if (
-          wavoipActiveToken &&
+          wavoipActiveTokens.length &&
           typeof window.wavoip.device.remove === 'function'
         ) {
-          window.wavoip.device.remove(wavoipActiveToken);
+          for (const token of wavoipActiveTokens) {
+            try {
+              window.wavoip.device.remove(token);
+            } catch (removeErr) {
+              log('device.remove token failed', token, removeErr);
+            }
+          }
         } else if (typeof window.wavoip.device.removeAll === 'function') {
           window.wavoip.device.removeAll();
         }
@@ -640,8 +566,9 @@
     }
 
     wavoipActiveToken = null;
+    wavoipActiveTokens = [];
     wavoipConnectedLocationId = null;
-    wavoipConnectedInstanceId = null;
+    wavoipConnectedInstanceIds = [];
     wavoipReadyPromise = null;
     clearSaved();
     log('VOIP desconectado', reason || 'manual');
@@ -651,14 +578,14 @@
     if (clearSelectionForCurrentLocation) {
       const locationId = getLocationId();
       if (locationId) {
-        clearSavedSelectedInstance(locationId);
+        clearSavedSelectedInstances(locationId);
       }
     }
     disconnectWavoipSession('clear');
   }
 
   async function requestWavoipToken() {
-    const resolved = await resolveTokenFlow(true);
+    const resolved = await resolveTokenFlow();
     return resolved && resolved.token ? resolved.token : null;
   }
 
@@ -764,37 +691,74 @@
 
     await wavoipReadyPromise;
 
-    const resolved = await resolveTokenFlow(!!forcePromptToken);
-    if (!resolved || !resolved.token) {
+    // Sempre abre seletor de instancias a cada clique
+    const resolved = await resolveTokenFlow();
+    if (!resolved || !resolved.tokens || !resolved.tokens.length) {
       throw new Error('Selecao de instancia cancelada ou sem token disponivel.');
     }
 
-    const token = resolved.token;
-    const resolvedInstanceId = String(resolved.instanceId || '').trim();
+    const nextTokens = Array.from(
+      new Set(
+        (resolved.tokens || [])
+          .map((token) => String(token || '').trim())
+          .filter(Boolean)
+      )
+    );
+    const nextInstanceIds = (resolved.instanceIds || [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
 
     const shouldReconnect =
-      wavoipActiveToken !== token ||
       wavoipConnectedLocationId !== currentLocationId ||
-      (resolvedInstanceId && wavoipConnectedInstanceId !== resolvedInstanceId);
+      !arraysEqualAsSet(wavoipActiveTokens, nextTokens);
 
     if (shouldReconnect) {
-      if (
-        wavoipActiveToken &&
-        wavoipActiveToken !== token &&
+      const canRemoveOne =
         window.wavoip &&
         window.wavoip.device &&
-        typeof window.wavoip.device.remove === 'function'
-      ) {
+        typeof window.wavoip.device.remove === 'function';
+      const canRemoveAll =
+        window.wavoip &&
+        window.wavoip.device &&
+        typeof window.wavoip.device.removeAll === 'function';
+
+      const currentTokens = Array.from(new Set(wavoipActiveTokens));
+      const toRemove = currentTokens.filter((token) => !nextTokens.includes(token));
+      const toAdd = nextTokens.filter((token) => !currentTokens.includes(token));
+
+      if (canRemoveOne) {
+        for (const token of toRemove) {
+          try {
+            window.wavoip.device.remove(token);
+          } catch (e) {
+            log('device.remove previous token failed', token, e);
+          }
+        }
+      } else if (canRemoveAll && toRemove.length) {
         try {
-          window.wavoip.device.remove(wavoipActiveToken);
+          window.wavoip.device.removeAll();
         } catch (e) {
-          log('device.remove previous token failed', e);
+          log('device.removeAll failed', e);
+        }
+        for (const token of nextTokens) {
+          window.wavoip.device.add(token);
+        }
+      } else {
+        for (const token of toAdd) {
+          window.wavoip.device.add(token);
         }
       }
-      window.wavoip.device.add(token);
-      wavoipActiveToken = token;
+
+      if (canRemoveOne || (canRemoveAll && !toRemove.length)) {
+        for (const token of toAdd) {
+          window.wavoip.device.add(token);
+        }
+      }
+
+      wavoipActiveTokens = nextTokens;
+      wavoipActiveToken = nextTokens[0] || null;
       wavoipConnectedLocationId = currentLocationId;
-      wavoipConnectedInstanceId = resolvedInstanceId || null;
+      wavoipConnectedInstanceIds = nextInstanceIds;
     }
 
     enforceWavoipWidgetButtonHidden();
@@ -823,7 +787,10 @@
       return { ok: true, started: false, reason: 'start-fn-missing' };
     }
 
-    const opts = wavoipActiveToken ? { fromTokens: [wavoipActiveToken] } : null;
+    const opts =
+      wavoipActiveTokens && wavoipActiveTokens.length
+        ? { fromTokens: wavoipActiveTokens }
+        : null;
     const startPromise = opts ? startFn(phone, opts) : startFn(phone);
 
     if (
@@ -1210,7 +1177,6 @@
   // helpers expostos para debug
   window._zaptosVoipGHL_V2 = {
     resolveTokenFlow,
-    fetchToken,
     fetchVoipInstances,
     clearSaved,
     clearWavoipToken,
@@ -1224,5 +1190,7 @@
   log('ZaptosVoip – Nova UI V2 inicializado');
 })();
 // ======================= Fim do ZaptosVoip – Nova UI GHL (V2) =======================
+
+
 
 
