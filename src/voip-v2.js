@@ -322,12 +322,37 @@
             row.webphone_token)) ||
           ''
       ).trim();
+      const wavoipStatus = String(
+        (row &&
+          (row.wavoip_status ||
+            row.status ||
+            (row.device && row.device.status) ||
+            '')) ||
+          ''
+      )
+        .trim()
+        .toLowerCase();
+      const canCallRaw = row && row.can_call;
+      const canCall =
+        canCallRaw === true ||
+        canCallRaw === 'true' ||
+        canCallRaw === 1 ||
+        canCallRaw === '1' ||
+        wavoipStatus === 'open';
+      const callError = String((row && row.call_error) || '').trim();
+      const wavoipDeviceId = String(
+        (row && (row.wavoip_device_id || row.device_id || '')) || ''
+      ).trim();
 
       normalized.push({
         id,
         instance_id: id,
         instance_name: name,
-        token
+        token,
+        wavoip_status: wavoipStatus || null,
+        can_call: canCall,
+        call_error: callError || null,
+        wavoip_device_id: wavoipDeviceId || null
       });
     }
     return normalized;
@@ -448,8 +473,12 @@
 
     const optionsText = instances
       .map((item, index) => {
-        const status = item.token ? '' : ' (sem token)';
-        return `${index + 1}) ${item.instance_name}${status}`;
+        const tags = [];
+        if (!item.token) tags.push('sem token');
+        if (item.wavoip_status) tags.push(`status: ${item.wavoip_status}`);
+        return `${index + 1}) ${item.instance_name}${
+          tags.length ? ` (${tags.join(', ')})` : ''
+        }`;
       })
       .join('\n');
 
@@ -519,7 +548,10 @@
     const instances = selectedInstances.map((item) => ({
       id: getInstanceIdentity(item),
       name: String(item.instance_name || '').trim(),
-      token: String(item.token || '').trim()
+      token: String(item.token || '').trim(),
+      can_call: !!item.can_call,
+      wavoip_status: String(item.wavoip_status || '').trim().toLowerCase(),
+      call_error: String(item.call_error || '').trim()
     }));
 
     return {
@@ -853,7 +885,12 @@
       nextInstances.push({
         token,
         id: String((item && item.id) || '').trim(),
-        name: String((item && item.name) || '').trim()
+        name: String((item && item.name) || '').trim(),
+        can_call: !!(item && item.can_call),
+        wavoip_status: String((item && item.wavoip_status) || '')
+          .trim()
+          .toLowerCase(),
+        call_error: String((item && item.call_error) || '').trim()
       });
     }
     if (!nextInstances.length) {
@@ -863,7 +900,10 @@
         nextInstances.push({
           token,
           id: String((nextInstanceIds || [])[i] || '').trim(),
-          name
+          name,
+          can_call: false,
+          wavoip_status: '',
+          call_error: ''
         });
       }
     }
@@ -935,10 +975,20 @@
       const token = String((item && item.token) || '').trim();
       if (!token || seen.has(token)) continue;
       seen.add(token);
+      const status = String((item && item.wavoip_status) || '')
+        .trim()
+        .toLowerCase();
+      const canCall =
+        item && (item.can_call === true || item.can_call === 'true')
+          ? true
+          : status === 'open';
       options.push({
         token,
         id: String((item && item.id) || '').trim(),
-        name: String((item && item.name) || '').trim()
+        name: String((item && item.name) || '').trim(),
+        wavoip_status: status || '',
+        can_call: canCall,
+        call_error: String((item && item.call_error) || '').trim()
       });
     }
 
@@ -947,7 +997,14 @@
         const token = String(tokenRaw || '').trim();
         if (!token || seen.has(token)) continue;
         seen.add(token);
-        options.push({ token, id: '', name: '' });
+        options.push({
+          token,
+          id: '',
+          name: '',
+          wavoip_status: '',
+          can_call: false,
+          call_error: ''
+        });
       }
     }
 
@@ -960,6 +1017,88 @@
     return options;
   }
 
+  function isInstanceOpenStatus(value) {
+    return String(value || '').trim().toLowerCase() === 'open';
+  }
+
+  function hasCanCallFlag(value) {
+    return value === true || value === 'true' || value === 1 || value === '1';
+  }
+
+  async function verifyOutgoingCallSelection(selectedOption) {
+    const locationId = getLocationId();
+    if (!locationId) {
+      return {
+        ok: false,
+        reason: 'Subconta invalida para verificar a instancia.'
+      };
+    }
+
+    const latest = await fetchVoipInstances(locationId);
+    if (!latest.length) {
+      return {
+        ok: false,
+        reason: 'Nao foi possivel verificar o status da instancia para ligar.'
+      };
+    }
+
+    const selectedToken = String((selectedOption && selectedOption.token) || '').trim();
+    const selectedId = String((selectedOption && selectedOption.id) || '').trim();
+    const selectedName = String((selectedOption && selectedOption.name) || '').trim();
+
+    let matched = null;
+    if (selectedToken) {
+      matched =
+        latest.find((item) => String(item.token || '').trim() === selectedToken) ||
+        null;
+    }
+    if (!matched && selectedId) {
+      matched =
+        latest.find((item) => getInstanceIdentity(item) === selectedId) || null;
+    }
+    if (!matched && selectedName) {
+      matched =
+        latest.find(
+          (item) =>
+            String(item.instance_name || '').trim().toLowerCase() ===
+            selectedName.toLowerCase()
+        ) || null;
+    }
+
+    if (!matched) {
+      return {
+        ok: false,
+        reason: 'Nao foi possivel validar a instancia selecionada para ligacao.'
+      };
+    }
+
+    const status = String(matched.wavoip_status || matched.status || '')
+      .trim()
+      .toLowerCase();
+    const canCall = hasCanCallFlag(matched.can_call) || isInstanceOpenStatus(status);
+    const name = String(matched.instance_name || selectedName || 'Instancia').trim();
+    const reason = canCall
+      ? ''
+      : String(matched.call_error || '').trim() ||
+        `A instancia "${name}" nao esta com status open (status atual: ${
+          status || 'desconhecido'
+        }).`;
+
+    return {
+      ok: canCall,
+      token: String(matched.token || selectedToken || '').trim(),
+      reason,
+      option: {
+        token: String(matched.token || selectedToken || '').trim(),
+        id: String(getInstanceIdentity(matched) || selectedId || '').trim(),
+        name,
+        wavoip_status: status || '',
+        can_call: canCall,
+        call_error: String(matched.call_error || '').trim()
+      }
+    };
+  }
+
   async function chooseOutgoingCallToken() {
     const options = getActiveCallInstanceOptions();
     if (!options.length) {
@@ -967,12 +1106,17 @@
     }
 
     if (options.length === 1) {
-      return options[0].token;
+      const validated = await verifyOutgoingCallSelection(options[0]);
+      if (!validated.ok) {
+        const reason =
+          validated.reason ||
+          'A instancia selecionada nao esta com status open para ligacao.';
+        throw new Error(reason);
+      }
+      return validated.token || options[0].token;
     }
 
-    const optionsText = options
-      .map((item, index) => `${index + 1}) ${item.name}`)
-      .join('\n');
+    const optionsText = options.map((item, index) => `${index + 1}) ${item.name}`).join('\n');
 
     while (true) {
       const typed = prompt(
@@ -992,7 +1136,17 @@
         continue;
       }
 
-      return options[selectedIndex - 1].token;
+      const selected = options[selectedIndex - 1];
+      const validated = await verifyOutgoingCallSelection(selected);
+      if (!validated.ok) {
+        const reason =
+          validated.reason ||
+          `A instancia "${selected.name}" nao esta com status open para ligacao.`;
+        alert(reason);
+        continue;
+      }
+
+      return validated.token || selected.token;
     }
   }
 
@@ -1004,10 +1158,6 @@
     }
 
     enforceWavoipWidgetButtonHidden();
-
-    if (typeof window.wavoip.call.setInput === 'function') {
-      window.wavoip.call.setInput(phone);
-    }
 
     const startFn =
       (window.wavoip.call &&
@@ -1021,6 +1171,10 @@
     const selectedToken = await chooseOutgoingCallToken();
     if (selectedToken == null) {
       return { ok: false, started: false, reason: 'user-cancel' };
+    }
+
+    if (typeof window.wavoip.call.setInput === 'function') {
+      window.wavoip.call.setInput(phone);
     }
 
     if (

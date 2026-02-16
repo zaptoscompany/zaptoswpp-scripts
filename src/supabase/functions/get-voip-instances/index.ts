@@ -37,12 +37,16 @@ function normalizeInstanceRow(row: Record<string, unknown>) {
   const token = readString(
     row.wavoip_token ?? row.token ?? row.access_token ?? row.webphone_token
   );
+  const wavoipDeviceId = readString(
+    row.wavoip_device_id ?? row.device_id ?? row.wavoipDeviceId
+  );
 
   return {
     id: instanceId || instanceName,
     instance_id: instanceId || instanceName,
     instance_name: instanceName,
-    token: token || null
+    token: token || null,
+    wavoip_device_id: wavoipDeviceId || null
   };
 }
 
@@ -129,6 +133,64 @@ async function fetchGhlResource(
   const text = await resp.text().catch(() => '');
   const json = parseJsonSafe(text);
   return { ok: resp.ok, status: resp.status, text, json };
+}
+
+function extractWavoipDeviceStatus(payload: any): string {
+  const resultItem = Array.isArray(payload?.result)
+    ? payload.result[0]
+    : payload?.result;
+  const dataItem = Array.isArray(payload?.data)
+    ? payload.data[0]
+    : payload?.data;
+
+  const candidates = [
+    payload?.status,
+    payload?.status_norm,
+    payload?.device?.status,
+    payload?.device?.status_norm,
+    resultItem?.status,
+    resultItem?.status_norm,
+    resultItem?.device?.status,
+    resultItem?.device?.status_norm,
+    dataItem?.status,
+    dataItem?.status_norm,
+    dataItem?.device?.status,
+    dataItem?.device?.status_norm,
+    payload?.data?.status,
+    payload?.data?.device?.status,
+    payload?.result?.status
+  ];
+
+  for (const candidate of candidates) {
+    const status = readString(candidate).toLowerCase();
+    if (status) return status;
+  }
+
+  return '';
+}
+
+async function fetchWavoipDeviceConnection(
+  deviceId: string,
+  panelJwt: string
+) {
+  const endpoint = `http://api.wavoip.com/devices/${encodeURIComponent(deviceId)}`;
+  const resp = await fetch(endpoint, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${panelJwt}`
+    }
+  });
+
+  const text = await resp.text().catch(() => '');
+  const json = parseJsonSafe(text);
+  const status = extractWavoipDeviceStatus(json);
+
+  return {
+    ok: resp.ok,
+    http_status: resp.status,
+    status
+  };
 }
 
 Deno.serve(async (req) => {
@@ -288,10 +350,70 @@ Deno.serve(async (req) => {
     .map((row) => normalizeInstanceRow((row || {}) as Record<string, unknown>))
     .filter((row) => !!row.instance_name);
 
+  const panelJwt = readString(Deno.env.get('WAVOIP_PANEL_JWT'));
+  const wavoipChecksEnabled = !!panelJwt;
+
+  const instancesWithStatus = await Promise.all(
+    instances.map(async (instance) => {
+      const deviceId = readString((instance as any).wavoip_device_id);
+
+      if (!wavoipChecksEnabled) {
+        return {
+          ...instance,
+          status: null,
+          wavoip_status: null,
+          can_call: false,
+          call_error:
+            'Verificacao de dispositivo indisponivel: secret WAVOIP_PANEL_JWT nao configurado.'
+        };
+      }
+
+      if (!deviceId) {
+        return {
+          ...instance,
+          status: null,
+          wavoip_status: null,
+          can_call: false,
+          call_error:
+            'Instancia sem wavoip_device_id cadastrado para verificacao.'
+        };
+      }
+
+      try {
+        const check = await fetchWavoipDeviceConnection(deviceId, panelJwt);
+        const status = readString(check.status).toLowerCase();
+        const canCall = check.ok && status === 'open';
+        const callError = canCall
+          ? null
+          : `Instancia nao esta pronta para ligacao (status: ${status || 'desconhecido'}).`;
+
+        return {
+          ...instance,
+          status: status || null,
+          wavoip_status: status || null,
+          can_call: canCall,
+          wavoip_http_status: check.http_status,
+          call_error: callError
+        };
+      } catch (e: any) {
+        return {
+          ...instance,
+          status: null,
+          wavoip_status: null,
+          can_call: false,
+          call_error: `Erro ao verificar dispositivo Wavoip: ${readString(
+            e?.message || e
+          ) || 'erro desconhecido'}`
+        };
+      }
+    })
+  );
+
   return jsonResponse({
     ok: true,
     location_id: locationId,
-    count: instances.length,
-    instances
+    count: instancesWithStatus.length,
+    wavoip_checks_enabled: wavoipChecksEnabled,
+    instances: instancesWithStatus
   });
 });
