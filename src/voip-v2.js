@@ -1150,6 +1150,117 @@
     }
   }
 
+  function getVoipStartResultError(result) {
+    if (!result || typeof result !== 'object') return '';
+    if (!result.err) return '';
+    return (
+      (result.err.devices &&
+        result.err.devices[0] &&
+        result.err.devices[0].reason) ||
+      result.err.message ||
+      String(result.err) ||
+      ''
+    );
+  }
+
+  function hasVoipCallInProgress() {
+    try {
+      if (!window.wavoip || !window.wavoip.call) return false;
+      const outgoing =
+        typeof window.wavoip.call.getCallOutgoing === 'function'
+          ? window.wavoip.call.getCallOutgoing()
+          : null;
+      if (outgoing) return true;
+
+      const active =
+        typeof window.wavoip.call.getCallActive === 'function'
+          ? window.wavoip.call.getCallActive()
+          : null;
+      if (active) return true;
+    } catch (e) {
+      log('hasVoipCallInProgress check failed', e);
+    }
+    return false;
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForVoipCallStart(timeoutMs) {
+    const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 1800;
+    const interval = 150;
+    const startAt = Date.now();
+    while (Date.now() - startAt < timeout) {
+      if (hasVoipCallInProgress()) return true;
+      await wait(interval);
+    }
+    return hasVoipCallInProgress();
+  }
+
+  async function triggerVoipCall(phone, selectedToken) {
+    const callApi = window.wavoip && window.wavoip.call ? window.wavoip.call : null;
+    if (!callApi) {
+      return { ok: false, reason: 'Modulo de chamadas VOIP indisponivel.' };
+    }
+
+    const startCallFn =
+      typeof callApi.startCall === 'function' ? callApi.startCall.bind(callApi) : null;
+    const startFn = typeof callApi.start === 'function' ? callApi.start.bind(callApi) : null;
+
+    const payloadWithToken = selectedToken
+      ? { to: phone, fromTokens: [selectedToken], fromToken: selectedToken }
+      : { to: phone };
+    const legacyOpts = selectedToken
+      ? { fromTokens: [selectedToken], fromToken: selectedToken }
+      : null;
+
+    const attempts = [];
+    if (startCallFn) attempts.push(() => startCallFn(payloadWithToken));
+    if (startFn) attempts.push(() => startFn(payloadWithToken));
+    if (startCallFn) attempts.push(() => (legacyOpts ? startCallFn(phone, legacyOpts) : startCallFn(phone)));
+    if (startFn) attempts.push(() => (legacyOpts ? startFn(phone, legacyOpts) : startFn(phone)));
+    if (startCallFn && selectedToken) {
+      attempts.push(() => startCallFn({ to: phone, fromToken: selectedToken }));
+    }
+    if (startFn && selectedToken) {
+      attempts.push(() => startFn({ to: phone, fromToken: selectedToken }));
+    }
+
+    if (!attempts.length) {
+      return { ok: false, reason: 'API de chamada VOIP nao disponivel.' };
+    }
+
+    let lastReason = '';
+    for (const runAttempt of attempts) {
+      try {
+        const result = await runAttempt();
+        const errReason = getVoipStartResultError(result);
+        if (errReason) {
+          lastReason = errReason;
+          continue;
+        }
+
+        if (result && result.call) {
+          return { ok: true };
+        }
+
+        const started = await waitForVoipCallStart(1600);
+        if (started) {
+          return { ok: true };
+        }
+      } catch (e) {
+        const message = String((e && e.message) || e || '').trim();
+        if (message) lastReason = message;
+      }
+    }
+
+    return {
+      ok: false,
+      reason: lastReason || 'Nao foi possivel iniciar a ligacao automaticamente.'
+    };
+  }
+
   async function startVoipLeadCall(phone) {
     await initWavoipWebphone(false, { keepCurrentConnections: true });
 
@@ -1158,15 +1269,6 @@
     }
 
     enforceWavoipWidgetButtonHidden();
-
-    const startFn =
-      (window.wavoip.call &&
-        (window.wavoip.call.startCall || window.wavoip.call.start)) ||
-      null;
-
-    if (typeof startFn !== 'function') {
-      return { ok: true, started: false, reason: 'start-fn-missing' };
-    }
 
     const selectedToken = await chooseOutgoingCallToken();
     if (selectedToken == null) {
@@ -1190,31 +1292,22 @@
       }
     }
 
-    const opts = selectedToken
-      ? {
-          fromTokens: [selectedToken],
-          fromToken: selectedToken
-        }
-      : null;
-    const startPromise = opts ? startFn(phone, opts) : startFn(phone);
-
     if (
       window.wavoip.widget &&
       typeof window.wavoip.widget.open === 'function'
     ) {
       window.wavoip.widget.open();
+    } else if (
+      window.wavoip &&
+      window.wavoip.widget &&
+      typeof window.wavoip.widget.toggle === 'function'
+    ) {
+      window.wavoip.widget.toggle();
     }
 
-    const result = await startPromise;
-
-    if (result && result.err) {
-      const reason =
-        (result.err.devices &&
-          result.err.devices[0] &&
-          result.err.devices[0].reason) ||
-        result.err.message ||
-        String(result.err);
-      throw new Error(reason || 'Falha ao iniciar chamada no VOIP.');
+    const trigger = await triggerVoipCall(phone, selectedToken);
+    if (!trigger.ok) {
+      throw new Error(trigger.reason || 'Falha ao iniciar chamada no VOIP.');
     }
 
     return { ok: true, started: true };
