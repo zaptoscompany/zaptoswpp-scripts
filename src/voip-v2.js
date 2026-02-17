@@ -413,6 +413,15 @@
     }
   }
 
+  async function fetchVoipInstancesWithTokenForLocation(locationId) {
+    if (!locationId) return [];
+    const instances = await fetchVoipInstances(locationId);
+    return (instances || []).filter((item) => {
+      const token = String((item && item.token) || '').trim();
+      return !!token;
+    });
+  }
+
   function parseInstanceSelection(typed, max) {
     const normalized = String(typed || '').trim();
     if (!normalized) return [];
@@ -1164,19 +1173,54 @@
   }
 
   function hasVoipCallInProgress() {
+    function isActiveCallShape(callObj) {
+      if (!callObj) return false;
+      if (Array.isArray(callObj)) {
+        return callObj.some((item) => isActiveCallShape(item));
+      }
+      if (typeof callObj !== 'object') return false;
+
+      if (
+        callObj.id ||
+        callObj.call_id ||
+        callObj.peer ||
+        callObj.transport ||
+        callObj.startedAt ||
+        callObj.createdAt
+      ) {
+        return true;
+      }
+
+      const rawState = String(callObj.status || callObj.state || '')
+        .trim()
+        .toLowerCase();
+      if (!rawState) return false;
+
+      const nonActiveStates = new Set([
+        'idle',
+        'ended',
+        'end',
+        'terminated',
+        'hangup',
+        'disconnected',
+        'closed'
+      ]);
+      return !nonActiveStates.has(rawState);
+    }
+
     try {
       if (!window.wavoip || !window.wavoip.call) return false;
       const outgoing =
         typeof window.wavoip.call.getCallOutgoing === 'function'
           ? window.wavoip.call.getCallOutgoing()
           : null;
-      if (outgoing) return true;
+      if (isActiveCallShape(outgoing)) return true;
 
       const active =
         typeof window.wavoip.call.getCallActive === 'function'
           ? window.wavoip.call.getCallActive()
           : null;
-      if (active) return true;
+      if (isActiveCallShape(active)) return true;
     } catch (e) {
       log('hasVoipCallInProgress check failed', e);
     }
@@ -1206,52 +1250,299 @@
 
     const startCallFn =
       typeof callApi.startCall === 'function' ? callApi.startCall.bind(callApi) : null;
-    const startFn = typeof callApi.start === 'function' ? callApi.start.bind(callApi) : null;
+    const startFn =
+      typeof callApi.start === 'function' ? callApi.start.bind(callApi) : null;
+    const startPrimary = startCallFn || startFn;
 
-    const payloadWithToken = selectedToken
-      ? { to: phone, fromTokens: [selectedToken], fromToken: selectedToken }
-      : { to: phone };
-    const legacyOpts = selectedToken
-      ? { fromTokens: [selectedToken], fromToken: selectedToken }
-      : null;
-
-    const attempts = [];
-    if (startCallFn) attempts.push(() => startCallFn(payloadWithToken));
-    if (startFn) attempts.push(() => startFn(payloadWithToken));
-    if (startCallFn) attempts.push(() => (legacyOpts ? startCallFn(phone, legacyOpts) : startCallFn(phone)));
-    if (startFn) attempts.push(() => (legacyOpts ? startFn(phone, legacyOpts) : startFn(phone)));
-    if (startCallFn && selectedToken) {
-      attempts.push(() => startCallFn({ to: phone, fromToken: selectedToken }));
-    }
-    if (startFn && selectedToken) {
-      attempts.push(() => startFn({ to: phone, fromToken: selectedToken }));
-    }
-
-    if (!attempts.length) {
+    if (!startPrimary) {
       return { ok: false, reason: 'API de chamada VOIP nao disponivel.' };
     }
 
-    let lastReason = '';
-    for (const runAttempt of attempts) {
+    function getRuntimeDeviceList() {
       try {
-        const result = await runAttempt();
-        const errReason = getVoipStartResultError(result);
-        if (errReason) {
-          lastReason = errReason;
-          continue;
-        }
-
-        if (result && result.call) {
-          return { ok: true };
-        }
-
-        const started = await waitForVoipCallStart(1600);
-        if (started) {
-          return { ok: true };
+        if (
+          window.wavoip &&
+          window.wavoip.device &&
+          typeof window.wavoip.device.get === 'function'
+        ) {
+          const list = window.wavoip.device.get();
+          if (Array.isArray(list)) return list;
         }
       } catch (e) {
-        const message = String((e && e.message) || e || '').trim();
-        if (message) lastReason = message;
+        log('device.get failed', e);
+      }
+      try {
+        if (
+          window.wavoip &&
+          window.wavoip.device &&
+          typeof window.wavoip.device.getDevices === 'function'
+        ) {
+          const list = window.wavoip.device.getDevices();
+          if (Array.isArray(list)) return list;
+        }
+      } catch (e) {
+        log('device.getDevices failed', e);
+      }
+      return [];
+    }
+
+    function parseRgbChannels(colorValue) {
+      const raw = String(colorValue || '').trim();
+      const match = raw.match(/^rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+      if (!match) return null;
+      return {
+        r: Number(match[1]),
+        g: Number(match[2]),
+        b: Number(match[3])
+      };
+    }
+
+    function isGreenishBackground(colorValue) {
+      const channels = parseRgbChannels(colorValue);
+      if (!channels) return false;
+      return (
+        channels.g >= 110 &&
+        channels.g > channels.r + 20 &&
+        channels.g > channels.b + 20
+      );
+    }
+
+    function findWavoipDialerRoot() {
+      const allNodes = Array.from(document.querySelectorAll('*'));
+      const versionNode = allNodes.find((el) => {
+        const text = String(el.textContent || '').trim();
+        return text && text.length <= 40 && /\bv\s*\d+\.\d+\.\d+/i.test(text);
+      });
+      if (!versionNode) return null;
+
+      let current = versionNode;
+      for (let i = 0; i < 8 && current && current.parentElement; i++) {
+        current = current.parentElement;
+        const rect = current.getBoundingClientRect();
+        if (!rect || rect.width < 220 || rect.height < 300) continue;
+        if (rect.left < window.innerWidth * 0.45) continue;
+
+        const buttons = current.querySelectorAll('button, [role="button"]');
+        if (buttons.length >= 8) return current;
+      }
+
+      return null;
+    }
+
+    function clickNode(node) {
+      if (!node) return false;
+      try {
+        const events = [
+          'pointerdown',
+          'mousedown',
+          'pointerup',
+          'mouseup',
+          'click'
+        ];
+        for (const type of events) {
+          node.dispatchEvent(
+            new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            })
+          );
+        }
+        return true;
+      } catch (e) {
+        log('clickNode failed', e);
+        return false;
+      }
+    }
+
+    function clickWidgetDialButtonFallback() {
+      const root = findWavoipDialerRoot();
+      if (!root) return false;
+
+      const withPhoneIcon = Array.from(
+        root.querySelectorAll('button, [role="button"], div')
+      ).filter((el) => {
+        const rect = el.getBoundingClientRect();
+        if (!rect || rect.width < 34 || rect.height < 34) return false;
+        if (rect.bottom < window.innerHeight * 0.4) return false;
+
+        const path = el.querySelector(
+          'svg path[d*="M8.38 8.853"], svg path[d*="14.603"], svg path[d*="call"], svg path[d*="phone"]'
+        );
+        if (!path) return false;
+
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none') return false;
+        return true;
+      });
+
+      if (withPhoneIcon.length) {
+        const bestPhoneButton = withPhoneIcon.sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          const scoreA = ra.width * ra.height + ra.top;
+          const scoreB = rb.width * rb.height + rb.top;
+          return scoreB - scoreA;
+        })[0];
+        return clickNode(bestPhoneButton);
+      }
+
+      const candidates = Array.from(
+        root.querySelectorAll('button, [role="button"]')
+      ).filter((el) => {
+        const rect = el.getBoundingClientRect();
+        if (!rect || rect.width < 36 || rect.height < 36) return false;
+
+        const style = window.getComputedStyle(el);
+        const radius = Number.parseFloat(style.borderRadius || '0') || 0;
+        if (radius < 14) return false;
+        if (!isGreenishBackground(style.backgroundColor)) return false;
+        if (!el.querySelector('svg')) return false;
+        return true;
+      });
+
+      if (!candidates.length) return false;
+
+      const best = candidates.sort((a, b) => {
+        const ra = a.getBoundingClientRect();
+        const rb = b.getBoundingClientRect();
+        return rb.width * rb.height - ra.width * ra.height;
+      })[0];
+
+      return clickNode(best);
+    }
+
+    function findRuntimeDeviceByToken(token) {
+      const target = String(token || '').trim();
+      if (!target) return null;
+      const list = getRuntimeDeviceList();
+      return (
+        list.find((item) => String(item && item.token || '').trim() === target) ||
+        null
+      );
+    }
+
+    function isRuntimeDeviceReadyStatus(status) {
+      const normalized = String(status || '').trim().toLowerCase();
+      return (
+        normalized === 'open' ||
+        normalized === 'connected' ||
+        normalized === 'ready'
+      );
+    }
+
+    async function waitForRuntimeDeviceReady(token, timeoutMs) {
+      const target = String(token || '').trim();
+      if (!target) return true;
+
+      const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 15000;
+      const interval = 300;
+      const startAt = Date.now();
+
+      while (Date.now() - startAt < timeout) {
+        const device = findRuntimeDeviceByToken(target);
+        const status = String(device && device.status || '')
+          .trim()
+          .toLowerCase();
+        if (isRuntimeDeviceReadyStatus(status)) return true;
+        await wait(interval);
+      }
+
+      const last = findRuntimeDeviceByToken(target);
+      return isRuntimeDeviceReadyStatus(last && last.status);
+    }
+
+    async function setPreferredOutgoingToken(token) {
+      const target = String(token || '').trim();
+      if (!target || !window.wavoip || !window.wavoip.device) return;
+
+      const deviceApi = window.wavoip.device;
+      const methods = [
+        deviceApi.enable,
+        deviceApi.enableDevice
+      ].filter((fn) => typeof fn === 'function');
+
+      for (const fn of methods) {
+        try {
+          await fn.call(deviceApi, target);
+          return;
+        } catch (e1) {
+          try {
+            await fn.call(deviceApi, [target]);
+            return;
+          } catch (e2) {
+            try {
+              await fn.call(deviceApi, { token: target });
+              return;
+            } catch (e3) {
+              log('enable token failed', e1 || e2 || e3);
+            }
+          }
+        }
+      }
+    }
+
+    if (selectedToken) {
+      await setPreferredOutgoingToken(selectedToken);
+      await waitForRuntimeDeviceReady(selectedToken, 15000);
+    }
+
+    // Fluxo principal: simular o clique no mesmo botao verde usado manualmente.
+    // Quando existe mais de uma instancia, esse caminho respeita melhor o estado
+    // selecionado no widget.
+    const clickedFirst = clickWidgetDialButtonFallback();
+    if (clickedFirst) {
+      const startedAfterFirstClick = await waitForVoipCallStart(2500);
+      if (startedAfterFirstClick) {
+        return { ok: true };
+      }
+    }
+
+    const payloads = [];
+    if (selectedToken) {
+      payloads.push({ to: phone, fromTokens: [selectedToken], fromToken: selectedToken });
+      payloads.push({ to: phone, fromTokens: [selectedToken] });
+      payloads.push({ to: phone, fromToken: selectedToken });
+    }
+    payloads.push({ to: phone });
+
+    // A conexao websocket de voz pode levar alguns segundos para estabilizar.
+    const maxAttempts = 12;
+    const retryDelayMs = 900;
+    let lastReason = '';
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      for (const payload of payloads) {
+        try {
+          const result = await startPrimary(payload);
+          const errReason = getVoipStartResultError(result);
+          if (errReason) {
+            lastReason = errReason;
+          } else {
+            if (result && result.call) {
+              return { ok: true };
+            }
+
+            const started = await waitForVoipCallStart(1800);
+            if (started) {
+              return { ok: true };
+            }
+          }
+        } catch (e) {
+          const message = String((e && e.message) || e || '').trim();
+          if (message) lastReason = message;
+        }
+      }
+
+      if (attempt < maxAttempts) {
+        await wait(retryDelayMs);
+      }
+    }
+
+    const clicked = clickWidgetDialButtonFallback();
+    if (clicked) {
+      const startedAfterClick = await waitForVoipCallStart(2500);
+      if (startedAfterClick) {
+        return { ok: true };
       }
     }
 
@@ -1262,6 +1553,15 @@
   }
 
   async function startVoipLeadCall(phone) {
+    const locationId = getLocationId();
+    const locationInstances = await fetchVoipInstancesWithTokenForLocation(locationId);
+    if (!locationInstances.length) {
+      disconnectWavoipSession('no-location-instances');
+      throw new Error(
+        'Nenhuma instancia VOIP com token foi encontrada nesta subconta. A ligacao nao pode ser iniciada.'
+      );
+    }
+
     await initWavoipWebphone(false, { keepCurrentConnections: true });
 
     if (!window.wavoip || !window.wavoip.call) {
@@ -1303,6 +1603,10 @@
       typeof window.wavoip.widget.toggle === 'function'
     ) {
       window.wavoip.widget.toggle();
+    }
+
+    if (typeof window.wavoip.call.setInput === 'function') {
+      window.wavoip.call.setInput(phone);
     }
 
     const trigger = await triggerVoipCall(phone, selectedToken);
