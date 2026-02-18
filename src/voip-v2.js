@@ -1325,7 +1325,19 @@
     }
 
     if (withToken.length === 1) {
-      return withToken[0];
+      const selected = withToken[0];
+      const validated = await verifyOutgoingCallSelection(selected);
+      if (!validated.ok) {
+        alert(
+          validated.reason ||
+            'A instancia selecionada nao esta pronta/conectada para ligacao.'
+        );
+        return null;
+      }
+      return {
+        ...selected,
+        token: String(validated.token || selected.token || '').trim()
+      };
     }
 
     const optionsText = withToken
@@ -1351,7 +1363,20 @@
         continue;
       }
 
-      return withToken[parsed[0] - 1];
+      const selected = withToken[parsed[0] - 1];
+      const validated = await verifyOutgoingCallSelection(selected);
+      if (!validated.ok) {
+        alert(
+          validated.reason ||
+            `A instancia "${selected.instance_name}" nao esta pronta/conectada para ligacao.`
+        );
+        continue;
+      }
+
+      return {
+        ...selected,
+        token: String(validated.token || selected.token || '').trim()
+      };
     }
   }
 
