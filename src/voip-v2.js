@@ -25,6 +25,7 @@
     'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/get-voip-instances';
   const SELECTED_INSTANCE_MAP_KEY = 'zaptos_voip_selected_instance_by_location';
   const WAVOIP_HEADER_SLOT_ID = 'whatsAppHeaderSlotShared';
+  const VOIP_DIALOG_STYLE_ID = 'zaptos-voip-dialog-style-v2';
 
   let wavoipScriptPromise = null;
   let wavoipReadyPromise = null;
@@ -34,6 +35,7 @@
   let wavoipActiveInstances = [];
   let wavoipConnectedLocationId = null;
   let wavoipConnectedInstanceIds = [];
+  let activeVoipDialogClose = null;
 
   const log = (...a) => {
     if (DEBUG) console.log('[ZaptosVoip][v2]', ...a);
@@ -84,6 +86,618 @@
     } catch {
       return null;
     }
+  }
+
+  function ensureVoipDialogStyle() {
+    if (document.getElementById(VOIP_DIALOG_STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = VOIP_DIALOG_STYLE_ID;
+    style.textContent = `
+      .zv-dialog-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483646;
+        background: rgba(8, 12, 24, 0.58);
+        backdrop-filter: blur(2px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+      }
+      .zv-dialog-card {
+        width: min(440px, calc(100vw - 32px));
+        max-height: min(80vh, 720px);
+        background: linear-gradient(180deg, #22314a 0%, #1a253a 100%);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+        color: #e9eefb;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      }
+      .zv-dialog-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px 10px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .zv-dialog-title-wrap {
+        min-width: 0;
+      }
+      .zv-dialog-title {
+        margin: 0;
+        font-size: 20px;
+        line-height: 1.15;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        color: #f3f6ff;
+      }
+      .zv-dialog-subtitle {
+        margin: 6px 0 0 0;
+        font-size: 12px;
+        color: #aeb9cf;
+      }
+      .zv-dialog-close {
+        border: none;
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        cursor: pointer;
+        color: #d4ddf1;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 20px;
+        line-height: 1;
+      }
+      .zv-dialog-close:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .zv-dialog-body {
+        overflow: auto;
+        padding: 12px 14px 4px 14px;
+      }
+      .zv-dialog-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .zv-option {
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        background: #2d3b55;
+        color: inherit;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        padding: 12px 12px;
+        text-align: left;
+      }
+      .zv-option:hover {
+        border-color: rgba(103, 173, 255, 0.5);
+      }
+      .zv-option.is-selected {
+        border-color: #46b26e;
+        box-shadow: inset 0 0 0 1px rgba(70, 178, 110, 0.35);
+      }
+      .zv-option.is-disabled {
+        cursor: not-allowed;
+        opacity: 0.62;
+      }
+      .zv-option-main {
+        min-width: 0;
+        flex: 1;
+      }
+      .zv-option-label {
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.2;
+        color: #f2f6ff;
+        word-break: break-word;
+      }
+      .zv-option-subtitle {
+        margin-top: 3px;
+        font-size: 14px;
+        color: #b7c4de;
+        word-break: break-word;
+      }
+      .zv-option-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .zv-badge {
+        font-size: 12px;
+        line-height: 1;
+        border-radius: 7px;
+        padding: 6px 8px;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .zv-badge.connected {
+        color: #c8ffe0;
+        background: rgba(37, 168, 83, 0.22);
+        border-color: rgba(91, 217, 138, 0.35);
+      }
+      .zv-badge.connecting {
+        color: #ffe4b2;
+        background: rgba(180, 107, 32, 0.3);
+        border-color: rgba(255, 179, 83, 0.35);
+      }
+      .zv-badge.disconnected {
+        color: #ffd4d4;
+        background: rgba(171, 55, 55, 0.26);
+        border-color: rgba(255, 114, 114, 0.34);
+      }
+      .zv-badge.muted {
+        color: #d4dcec;
+        background: rgba(104, 118, 148, 0.22);
+        border-color: rgba(164, 177, 208, 0.26);
+      }
+      .zv-select-marker {
+        width: 22px;
+        height: 22px;
+        border-radius: 999px;
+        border: 2px solid rgba(240, 244, 255, 0.58);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+      }
+      .zv-select-marker::after {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #5cf08f;
+        transform: scale(0);
+        transition: transform 0.13s ease;
+      }
+      .zv-option.is-selected .zv-select-marker::after {
+        transform: scale(1);
+      }
+      .zv-toggle-marker {
+        width: 38px;
+        height: 22px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.22);
+        position: relative;
+      }
+      .zv-toggle-marker::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: #f7f8ff;
+        transition: transform 0.15s ease;
+      }
+      .zv-option.is-selected .zv-toggle-marker {
+        background: #38c768;
+      }
+      .zv-option.is-selected .zv-toggle-marker::after {
+        transform: translateX(16px);
+      }
+      .zv-dialog-feedback {
+        margin: 10px 14px 2px 14px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 126, 126, 0.33);
+        color: #ffd6d6;
+        font-size: 12px;
+        background: rgba(120, 39, 39, 0.25);
+        display: none;
+      }
+      .zv-dialog-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 12px 14px 14px 14px;
+      }
+      .zv-btn {
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        min-height: 34px;
+        padding: 0 14px;
+        color: #ebf0fd;
+        background: rgba(255, 255, 255, 0.08);
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .zv-btn:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .zv-btn.primary {
+        background: #2b8ef9;
+        border-color: #2b8ef9;
+        color: #fff;
+      }
+      .zv-btn.primary:hover {
+        background: #197adf;
+        border-color: #197adf;
+      }
+      .zv-btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .zv-message {
+        font-size: 14px;
+        line-height: 1.5;
+        color: #e6ecff;
+        padding: 8px 0 6px;
+        white-space: pre-wrap;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function resolveStatusBadge(status, canCall, hasToken) {
+    if (!hasToken) return { text: 'Sem token', tone: 'muted' };
+    const normalized = String(status || '').trim().toLowerCase();
+    if (canCall || normalized === 'open') {
+      return { text: 'Connected', tone: 'connected' };
+    }
+    if (normalized === 'connecting') {
+      return { text: 'Connecting', tone: 'connecting' };
+    }
+    if (normalized) {
+      return { text: 'Disconnected', tone: 'disconnected' };
+    }
+    return { text: 'Status desconhecido', tone: 'muted' };
+  }
+
+  function mountVoipDialog(title, subtitle, onCancel) {
+    ensureVoipDialogStyle();
+
+    if (typeof activeVoipDialogClose === 'function') {
+      try {
+        activeVoipDialogClose();
+      } catch {
+        /* ignore */
+      }
+      activeVoipDialogClose = null;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'zv-dialog-overlay';
+
+    const card = document.createElement('div');
+    card.className = 'zv-dialog-card';
+    overlay.appendChild(card);
+
+    const header = document.createElement('div');
+    header.className = 'zv-dialog-header';
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'zv-dialog-title-wrap';
+    const titleEl = document.createElement('h3');
+    titleEl.className = 'zv-dialog-title';
+    titleEl.textContent = title || 'VOIP';
+    titleWrap.appendChild(titleEl);
+    if (subtitle) {
+      const subtitleEl = document.createElement('p');
+      subtitleEl.className = 'zv-dialog-subtitle';
+      subtitleEl.textContent = subtitle;
+      titleWrap.appendChild(subtitleEl);
+    }
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'zv-dialog-close';
+    closeBtn.textContent = 'x';
+    closeBtn.setAttribute('aria-label', 'Fechar');
+
+    header.appendChild(titleWrap);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.className = 'zv-dialog-body';
+
+    const feedback = document.createElement('div');
+    feedback.className = 'zv-dialog-feedback';
+
+    const footer = document.createElement('div');
+    footer.className = 'zv-dialog-footer';
+
+    card.appendChild(header);
+    card.appendChild(body);
+    card.appendChild(feedback);
+    card.appendChild(footer);
+
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKeydown, true);
+      if (activeVoipDialogClose === close) {
+        activeVoipDialogClose = null;
+      }
+    };
+
+    const cancel = () => {
+      close();
+      if (typeof onCancel === 'function') {
+        onCancel();
+      }
+    };
+
+    const onKeydown = (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        cancel();
+      }
+    };
+
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) {
+        cancel();
+      }
+    });
+    closeBtn.addEventListener('click', cancel);
+
+    document.addEventListener('keydown', onKeydown, true);
+    document.body.appendChild(overlay);
+    activeVoipDialogClose = close;
+
+    return {
+      overlay,
+      card,
+      body,
+      footer,
+      feedback,
+      close,
+      cancel
+    };
+  }
+
+  async function showVoipNotice(message, opts) {
+    const options = opts || {};
+    const title = String(options.title || 'VOIP').trim() || 'VOIP';
+    return new Promise((resolve) => {
+      const dlg = mountVoipDialog(title, '', () => resolve(false));
+      const msg = document.createElement('div');
+      msg.className = 'zv-message';
+      msg.textContent = String(message || '').trim();
+      dlg.body.appendChild(msg);
+
+      const okBtn = document.createElement('button');
+      okBtn.type = 'button';
+      okBtn.className = 'zv-btn primary';
+      okBtn.textContent = 'OK';
+      okBtn.addEventListener('click', () => {
+        dlg.close();
+        resolve(true);
+      });
+      dlg.footer.appendChild(okBtn);
+      okBtn.focus();
+    });
+  }
+
+  async function showVoipSingleSelectDialog(config) {
+    const cfg = config || {};
+    const options = Array.isArray(cfg.options) ? cfg.options : [];
+    if (!options.length) return null;
+
+    let selectedIndex =
+      Number.isFinite(cfg.defaultIndex) && cfg.defaultIndex >= 0
+        ? cfg.defaultIndex
+        : -1;
+    if (selectedIndex >= options.length || (options[selectedIndex] && options[selectedIndex].disabled)) {
+      selectedIndex = options.findIndex((item) => !item.disabled);
+    }
+
+    return new Promise((resolve) => {
+      const dlg = mountVoipDialog(
+        String(cfg.title || 'Selecione').trim(),
+        String(cfg.subtitle || '').trim(),
+        () => resolve(null)
+      );
+
+      const list = document.createElement('div');
+      list.className = 'zv-dialog-list';
+      dlg.body.appendChild(list);
+
+      const rows = [];
+      const render = () => {
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          row.classList.toggle('is-selected', i === selectedIndex);
+        }
+        confirmBtn.disabled =
+          selectedIndex < 0 ||
+          selectedIndex >= options.length ||
+          !!(options[selectedIndex] && options[selectedIndex].disabled);
+      };
+
+      for (let i = 0; i < options.length; i++) {
+        const option = options[i] || {};
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'zv-option';
+        if (option.disabled) row.classList.add('is-disabled');
+
+        const main = document.createElement('div');
+        main.className = 'zv-option-main';
+        const label = document.createElement('div');
+        label.className = 'zv-option-label';
+        label.textContent = String(option.label || `Opcao ${i + 1}`);
+        main.appendChild(label);
+        if (option.subtitle) {
+          const subtitle = document.createElement('div');
+          subtitle.className = 'zv-option-subtitle';
+          subtitle.textContent = String(option.subtitle);
+          main.appendChild(subtitle);
+        }
+
+        const right = document.createElement('div');
+        right.className = 'zv-option-right';
+        if (option.statusText) {
+          const badge = document.createElement('span');
+          badge.className = `zv-badge ${option.statusTone || 'muted'}`;
+          badge.textContent = String(option.statusText);
+          right.appendChild(badge);
+        }
+        const marker = document.createElement('span');
+        marker.className = 'zv-select-marker';
+        right.appendChild(marker);
+
+        row.appendChild(main);
+        row.appendChild(right);
+        row.addEventListener('click', () => {
+          if (option.disabled) return;
+          selectedIndex = i;
+          render();
+        });
+
+        rows.push(row);
+        list.appendChild(row);
+      }
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'zv-btn';
+      cancelBtn.textContent = String(cfg.cancelText || 'Cancelar');
+      cancelBtn.addEventListener('click', () => {
+        dlg.close();
+        resolve(null);
+      });
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'zv-btn primary';
+      confirmBtn.textContent = String(cfg.confirmText || 'Selecionar');
+      confirmBtn.addEventListener('click', () => {
+        if (selectedIndex < 0 || selectedIndex >= options.length) {
+          dlg.feedback.textContent = 'Selecione uma opcao para continuar.';
+          dlg.feedback.style.display = 'block';
+          return;
+        }
+        if (options[selectedIndex] && options[selectedIndex].disabled) {
+          dlg.feedback.textContent = 'Esta opcao nao pode ser selecionada.';
+          dlg.feedback.style.display = 'block';
+          return;
+        }
+        dlg.close();
+        resolve(selectedIndex);
+      });
+
+      dlg.footer.appendChild(cancelBtn);
+      dlg.footer.appendChild(confirmBtn);
+      render();
+    });
+  }
+
+  async function showVoipMultiSelectDialog(config) {
+    const cfg = config || {};
+    const options = Array.isArray(cfg.options) ? cfg.options : [];
+    if (!options.length) return null;
+
+    const defaults = Array.isArray(cfg.defaultIndexes) ? cfg.defaultIndexes : [];
+    const selected = new Set(
+      defaults
+        .filter((idx) => Number.isFinite(idx) && idx >= 0 && idx < options.length)
+        .filter((idx) => !(options[idx] && options[idx].disabled))
+    );
+
+    return new Promise((resolve) => {
+      const dlg = mountVoipDialog(
+        String(cfg.title || 'Selecione').trim(),
+        String(cfg.subtitle || '').trim(),
+        () => resolve(null)
+      );
+
+      const list = document.createElement('div');
+      list.className = 'zv-dialog-list';
+      dlg.body.appendChild(list);
+
+      const rows = [];
+      const render = () => {
+        for (let i = 0; i < rows.length; i++) {
+          rows[i].classList.toggle('is-selected', selected.has(i));
+        }
+      };
+
+      for (let i = 0; i < options.length; i++) {
+        const option = options[i] || {};
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'zv-option';
+        if (option.disabled) row.classList.add('is-disabled');
+
+        const main = document.createElement('div');
+        main.className = 'zv-option-main';
+        const label = document.createElement('div');
+        label.className = 'zv-option-label';
+        label.textContent = String(option.label || `Opcao ${i + 1}`);
+        main.appendChild(label);
+        if (option.subtitle) {
+          const subtitle = document.createElement('div');
+          subtitle.className = 'zv-option-subtitle';
+          subtitle.textContent = String(option.subtitle);
+          main.appendChild(subtitle);
+        }
+
+        const right = document.createElement('div');
+        right.className = 'zv-option-right';
+        if (option.statusText) {
+          const badge = document.createElement('span');
+          badge.className = `zv-badge ${option.statusTone || 'muted'}`;
+          badge.textContent = String(option.statusText);
+          right.appendChild(badge);
+        }
+        const marker = document.createElement('span');
+        marker.className = 'zv-toggle-marker';
+        right.appendChild(marker);
+
+        row.appendChild(main);
+        row.appendChild(right);
+        row.addEventListener('click', () => {
+          if (option.disabled) return;
+          if (selected.has(i)) selected.delete(i);
+          else selected.add(i);
+          render();
+        });
+
+        rows.push(row);
+        list.appendChild(row);
+      }
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'zv-btn';
+      cancelBtn.textContent = String(cfg.cancelText || 'Cancelar');
+      cancelBtn.addEventListener('click', () => {
+        dlg.close();
+        resolve(null);
+      });
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'zv-btn primary';
+      confirmBtn.textContent = String(cfg.confirmText || 'Salvar');
+      confirmBtn.addEventListener('click', () => {
+        const result = Array.from(selected).sort((a, b) => a - b);
+        if (!result.length) {
+          dlg.feedback.textContent = 'Selecione ao menos uma opcao.';
+          dlg.feedback.style.display = 'block';
+          return;
+        }
+        dlg.close();
+        resolve(result);
+      });
+
+      dlg.footer.appendChild(cancelBtn);
+      dlg.footer.appendChild(confirmBtn);
+      render();
+    });
   }
 
   function looksLikeGhlId(value) {
@@ -610,7 +1224,7 @@
     const instances = await fetchVoipInstances(locationId);
 
     if (!instances.length) {
-      alert(
+      await showVoipNotice(
         'Nenhuma instancia VOIP foi encontrada para esta subconta. Verifique o cadastro da location.'
       );
       return null;
@@ -619,42 +1233,52 @@
     const savedIds = getSavedSelectedInstanceIds(locationId);
     const defaultIndexes = savedIds
       .map((savedId) =>
-        instances.findIndex((item) => getInstanceIdentity(item) === savedId) + 1
+        instances.findIndex((item) => getInstanceIdentity(item) === savedId)
       )
-      .filter((index) => index > 0);
+      .filter((index) => index >= 0);
 
-    const defaultSelection = defaultIndexes.join(',');
-
-    const optionsText = instances
-      .map((item, index) => {
-        const tags = [];
-        if (!item.token) tags.push('sem token');
-        if (item.wavoip_status) tags.push(`status: ${item.wavoip_status}`);
-        return `${index + 1}) ${item.instance_name}${
-          tags.length ? ` (${tags.join(', ')})` : ''
-        }`;
-      })
-      .join('\n');
+    const options = instances.map((item) => {
+      const hasToken = !!String(item && item.token).trim();
+      const statusMeta = resolveStatusBadge(
+        item && item.wavoip_status,
+        item && item.can_call,
+        hasToken
+      );
+      return {
+        label: String((item && item.instance_name) || 'Instancia'),
+        subtitle: hasToken
+          ? String((item && item.token) || '').trim()
+          : 'Sem token configurado',
+        statusText: statusMeta.text,
+        statusTone: statusMeta.tone,
+        disabled: !hasToken
+      };
+    });
 
     while (true) {
-      const typed = prompt(
-        `Escolha as instancias VOIP desta subconta (separadas por virgula):\n\n${optionsText}\n\nExemplo: 1,2,4`,
-        defaultSelection
-      );
+      const selectedIndexes = await showVoipMultiSelectDialog({
+        title: 'Voip Manager',
+        subtitle: 'Selecione as instancias ativas desta subconta',
+        options,
+        defaultIndexes,
+        confirmText: 'Salvar instancias',
+        cancelText: 'Cancelar'
+      });
 
-      if (typed == null) return null;
+      if (selectedIndexes == null) return null;
 
-      const selectedIndexes = parseInstanceSelection(typed, instances.length);
       if (!selectedIndexes.length) {
-        alert('Selecao invalida. Escolha ao menos uma instancia.');
+        await showVoipNotice('Selecao invalida. Escolha ao menos uma instancia.');
         continue;
       }
 
-      const selectedInstances = selectedIndexes.map((idx) => instances[idx - 1]);
-      const withoutToken = selectedInstances.filter((item) => !item.token);
+      const selectedInstances = selectedIndexes.map((idx) => instances[idx]);
+      const withoutToken = selectedInstances.filter(
+        (item) => !String((item && item.token) || '').trim()
+      );
       if (withoutToken.length) {
         const names = withoutToken.map((item) => item.instance_name).join(', ');
-        alert(
+        await showVoipNotice(
           `As seguintes instancias nao possuem token e nao podem ser ativadas: ${names}`
         );
         continue;
@@ -687,7 +1311,7 @@
     );
 
     if (!tokens.length) {
-      alert('Nao foi encontrado token valido nas instancias selecionadas.');
+      await showVoipNotice('Nao foi encontrado token valido nas instancias selecionadas.');
       return { tokens: [], source: 'instance-without-token' };
     }
 
@@ -1270,33 +1894,40 @@
       return validated.token || options[0].token;
     }
 
-    const optionsText = options.map((item, index) => `${index + 1}) ${item.name}`).join('\n');
+    const choiceOptions = options.map((item) => {
+      const statusMeta = resolveStatusBadge(
+        item && item.wavoip_status,
+        item && item.can_call,
+        !!String((item && item.token) || '').trim()
+      );
+      return {
+        label: String((item && item.name) || 'Instancia'),
+        subtitle: String((item && item.token) || '').trim(),
+        statusText: statusMeta.text,
+        statusTone: statusMeta.tone,
+        disabled: false
+      };
+    });
 
     while (true) {
-      const typed = prompt(
-        `Escolha de qual instancia deseja ligar:\n\n${optionsText}\n\nDigite o numero da instancia:`,
-        '1'
-      );
+      const selectedIndex = await showVoipSingleSelectDialog({
+        title: 'Escolher instancia',
+        subtitle: 'Selecione a instancia para originar a ligacao',
+        options: choiceOptions,
+        defaultIndex: 0,
+        confirmText: 'Usar instancia',
+        cancelText: 'Cancelar'
+      });
 
-      if (typed == null) return null;
+      if (selectedIndex == null) return null;
 
-      const selectedIndex = Number(String(typed).trim());
-      if (
-        !Number.isFinite(selectedIndex) ||
-        selectedIndex < 1 ||
-        selectedIndex > options.length
-      ) {
-        alert('Selecao invalida. Escolha um numero da lista.');
-        continue;
-      }
-
-      const selected = options[selectedIndex - 1];
+      const selected = options[selectedIndex];
       const validated = await verifyOutgoingCallSelection(selected);
       if (!validated.ok) {
         const reason =
           validated.reason ||
           `A instancia "${selected.name}" nao esta com status open para ligacao.`;
-        alert(reason);
+        await showVoipNotice(reason);
         continue;
       }
 
@@ -1307,7 +1938,7 @@
   async function chooseCallInstanceForClickToCall(locationId) {
     const instances = await fetchVoipInstances(locationId);
     if (!instances.length) {
-      alert(
+      await showVoipNotice(
         'Nenhuma instancia VOIP foi encontrada para esta subconta. Verifique o cadastro da location.'
       );
       return null;
@@ -1318,7 +1949,7 @@
     );
 
     if (!withToken.length) {
-      alert(
+      await showVoipNotice(
         'As instancias desta subconta nao possuem token VOIP para iniciar a ligacao.'
       );
       return null;
@@ -1328,7 +1959,7 @@
       const selected = withToken[0];
       const validated = await verifyOutgoingCallSelection(selected);
       if (!validated.ok) {
-        alert(
+        await showVoipNotice(
           validated.reason ||
             'A instancia selecionada nao esta pronta/conectada para ligacao.'
         );
@@ -1340,33 +1971,37 @@
       };
     }
 
-    const optionsText = withToken
-      .map((item, index) => {
-        const status = String((item && item.wavoip_status) || '').trim();
-        return `${index + 1}) ${item.instance_name}${
-          status ? ` (status: ${status})` : ''
-        }`;
-      })
-      .join('\n');
+    const choiceOptions = withToken.map((item) => {
+      const statusMeta = resolveStatusBadge(
+        item && item.wavoip_status,
+        item && item.can_call,
+        !!String((item && item.token) || '').trim()
+      );
+      return {
+        label: String((item && item.instance_name) || 'Instancia'),
+        subtitle: String((item && item.token) || '').trim(),
+        statusText: statusMeta.text,
+        statusTone: statusMeta.tone,
+        disabled: false
+      };
+    });
 
     while (true) {
-      const typed = prompt(
-        `Escolha de qual instancia deseja ligar:\n\n${optionsText}\n\nDigite o numero da instancia:`,
-        '1'
-      );
+      const selectedIndex = await showVoipSingleSelectDialog({
+        title: 'Escolher instancia',
+        subtitle: 'Selecione de qual instancia deseja ligar',
+        options: choiceOptions,
+        defaultIndex: 0,
+        confirmText: 'Continuar',
+        cancelText: 'Cancelar'
+      });
 
-      if (typed == null) return null;
+      if (selectedIndex == null) return null;
 
-      const parsed = parseInstanceSelection(typed, withToken.length);
-      if (parsed.length !== 1) {
-        alert('Selecao invalida. Escolha apenas uma instancia da lista.');
-        continue;
-      }
-
-      const selected = withToken[parsed[0] - 1];
+      const selected = withToken[selectedIndex];
       const validated = await verifyOutgoingCallSelection(selected);
       if (!validated.ok) {
-        alert(
+        await showVoipNotice(
           validated.reason ||
             `A instancia "${selected.instance_name}" nao esta pronta/conectada para ligacao.`
         );
@@ -1380,7 +2015,7 @@
     }
   }
 
-  function choosePhoneForClickToCall(phones) {
+  async function choosePhoneForClickToCall(phones) {
     const normalizedPhones = Array.from(
       new Set(
         (phones || [])
@@ -1392,30 +2027,25 @@
     if (!normalizedPhones.length) return null;
     if (normalizedPhones.length === 1) return normalizedPhones[0];
 
-    const optionsText = normalizedPhones
-      .map((phone, index) => `${index + 1}) ${phone}`)
-      .join('\n');
+    const choiceOptions = normalizedPhones.map((phone) => ({
+      label: phone,
+      subtitle: 'Numero do contato',
+      statusText: 'Telefone',
+      statusTone: 'muted',
+      disabled: false
+    }));
 
-    while (true) {
-      const typed = prompt(
-        `Este contato possui mais de um numero. Escolha qual deseja ligar:\n\n${optionsText}\n\nDigite o numero da opcao:`,
-        '1'
-      );
+    const selectedIndex = await showVoipSingleSelectDialog({
+      title: 'Escolher numero',
+      subtitle: 'Este contato possui mais de um telefone',
+      options: choiceOptions,
+      defaultIndex: 0,
+      confirmText: 'Usar numero',
+      cancelText: 'Cancelar'
+    });
 
-      if (typed == null) return null;
-
-      const selected = Number(String(typed || '').trim());
-      if (
-        !Number.isFinite(selected) ||
-        selected < 1 ||
-        selected > normalizedPhones.length
-      ) {
-        alert('Selecao invalida. Escolha um numero da lista.');
-        continue;
-      }
-
-      return normalizedPhones[selected - 1];
-    }
+    if (selectedIndex == null) return null;
+    return normalizedPhones[selectedIndex] || null;
   }
 
   function openClickToCallWindow(data) {
@@ -1913,7 +2543,7 @@
     enforceWavoipWidgetButtonHidden();
 
     if (message) {
-      alert(message);
+      await showVoipNotice(message);
     }
   }
 
@@ -2134,7 +2764,7 @@
       errLog('onClickWavoipButton error', e);
       const msg = String((e && e.message) || e || '');
       if (/cancelada/i.test(msg)) return;
-      alert('Erro ao abrir Webphone VOIP: ' + msg);
+      await showVoipNotice('Erro ao abrir Webphone VOIP: ' + msg);
     } finally {
       btn.dataset.busy = '0';
       btn.style.opacity = origOpacity;
@@ -2147,11 +2777,11 @@
     if (!isLocationScope()) return;
     try {
       await initWavoipWebphone(true);
-      alert('Instancia VOIP atualizada para esta subconta.');
+      await showVoipNotice('Instancia VOIP atualizada para esta subconta.');
     } catch (e) {
       if (e && /cancelada/i.test(String(e.message || e))) return;
       errLog('onContextMenuWavoipButton error', e);
-      alert('Nao foi possivel atualizar a instancia do VOIP.');
+      await showVoipNotice('Nao foi possivel atualizar a instancia do VOIP.');
     }
   }
   async function onClickCallButton(ev) {
@@ -2186,9 +2816,9 @@
         phones.push(extracted.phone);
       }
 
-      const finalPhone = choosePhoneForClickToCall(phones);
+      const finalPhone = await choosePhoneForClickToCall(phones);
       if (!finalPhone) {
-        alert('Nao foi possivel identificar o numero do contato para ligar.');
+        await showVoipNotice('Nao foi possivel identificar o numero do contato para ligar.');
         return;
       }
 
@@ -2211,7 +2841,7 @@
       errLog('onClickCallButton error', e);
       const msg = String((e && e.message) || e || '');
       if (/cancelada/i.test(msg)) return;
-      alert('Erro ao iniciar chamada: ' + msg);
+      await showVoipNotice('Erro ao iniciar chamada: ' + msg);
     } finally {
       btn.dataset.busy = '0';
       btn.style.opacity = origOpacity;
