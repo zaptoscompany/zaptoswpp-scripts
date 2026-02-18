@@ -157,7 +157,158 @@
     };
   }
 
-  async function fetchLeadPhoneByEdge() {
+  function firstNonEmptyString(values) {
+    if (!Array.isArray(values)) return '';
+    for (const value of values) {
+      const s = String(value || '').trim();
+      if (s) return s;
+    }
+    return '';
+  }
+
+  function collectPhonesFromKnownList(target, values) {
+    if (!Array.isArray(values) || !Array.isArray(target)) return;
+
+    for (const value of values) {
+      if (!value) continue;
+
+      if (Array.isArray(value)) {
+        collectPhonesFromKnownList(target, value);
+        continue;
+      }
+
+      if (typeof value === 'string' || typeof value === 'number') {
+        const normalized = normalizePhone(String(value));
+        if (normalized && !target.includes(normalized)) {
+          target.push(normalized);
+        }
+        continue;
+      }
+
+      if (typeof value === 'object') {
+        const objValue =
+          value.phone ||
+          value.number ||
+          value.value ||
+          value.phoneNumber ||
+          value.whatsapp ||
+          '';
+        if (objValue) {
+          const normalized = normalizePhone(String(objValue));
+          if (normalized && !target.includes(normalized)) {
+            target.push(normalized);
+          }
+        }
+      }
+    }
+  }
+
+  function collectPhonesByKeyHint(value, keyHint, out, seen, depth) {
+    if (value == null) return;
+    if (depth > 6) return;
+
+    if (typeof value === 'string' || typeof value === 'number') {
+      if (/phone|telefone|whatsapp|celular|mobile/i.test(String(keyHint || ''))) {
+        const normalized = normalizePhone(String(value));
+        if (normalized && !out.includes(normalized)) {
+          out.push(normalized);
+        }
+      }
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        collectPhonesByKeyHint(item, keyHint, out, seen, depth + 1);
+      }
+      return;
+    }
+
+    if (typeof value === 'object') {
+      if (seen.has(value)) return;
+      seen.add(value);
+      for (const [k, v] of Object.entries(value)) {
+        collectPhonesByKeyHint(v, k, out, seen, depth + 1);
+      }
+    }
+  }
+
+  function extractContactDataFromEdgePayload(payload) {
+    const contact =
+      (payload && payload.contact) ||
+      (payload && payload.data && payload.data.contact) ||
+      null;
+
+    const phones = [];
+    collectPhonesFromKnownList(phones, [
+      payload && payload.phone,
+      payload && payload.phone_number,
+      payload && payload.mobile,
+      payload && payload.whatsapp_phone,
+      payload && payload.phones,
+      payload && payload.phoneNumbers,
+      contact && contact.phone,
+      contact && contact.mobile,
+      contact && contact.mobilePhone,
+      contact && contact.whatsappPhone,
+      contact && contact.secondaryPhone,
+      contact && contact.phones,
+      contact && contact.phoneNumbers,
+      contact && contact.additionalPhones,
+      contact && contact.additionalPhoneNumbers
+    ]);
+
+    if (contact && Array.isArray(contact.customFields)) {
+      for (const field of contact.customFields) {
+        if (!field || typeof field !== 'object') continue;
+        const key = String(
+          field.key || field.name || field.field || field.label || field.id || ''
+        );
+        if (!/phone|telefone|whatsapp|celular|mobile/i.test(key)) continue;
+        collectPhonesFromKnownList(phones, [field.value]);
+      }
+    }
+
+    if (contact && typeof contact === 'object') {
+      collectPhonesByKeyHint(contact, 'contact', phones, new Set(), 0);
+    }
+
+    const firstName = firstNonEmptyString([
+      contact && contact.firstName,
+      contact && contact.first_name
+    ]);
+    const lastName = firstNonEmptyString([
+      contact && contact.lastName,
+      contact && contact.last_name
+    ]);
+    const composedName = [firstName, lastName].filter(Boolean).join(' ').trim();
+
+    const name = firstNonEmptyString([
+      contact && contact.name,
+      composedName,
+      payload && payload.name
+    ]);
+
+    const photo = firstNonEmptyString([
+      contact && contact.profilePic,
+      contact && contact.profilePicture,
+      contact && contact.profilePhoto,
+      contact && contact.photo,
+      contact && contact.avatar,
+      contact && contact.profileImage,
+      payload && payload.photo,
+      payload && payload.avatar
+    ]);
+
+    return {
+      phones,
+      name: name || null,
+      photo: photo || null,
+      contact: contact || null
+    };
+  }
+
+  async function fetchLeadContactByEdge() {
     window._zaptosVoipGHL_debug.contactCalls =
       window._zaptosVoipGHL_debug.contactCalls || [];
 
@@ -190,16 +341,10 @@
         json
       });
 
-      if (!resp.ok || !json) return null;
-
-      const phoneRaw =
-        json.phone ||
-        (json.contact && json.contact.phone) ||
-        (json.data && json.data.phone) ||
-        null;
-      return normalizePhone(phoneRaw);
+      if (!resp.ok || !json || json.ok === false) return null;
+      return extractContactDataFromEdgePayload(json);
     } catch (e) {
-      errLog('fetchLeadPhoneByEdge error', e);
+      errLog('fetchLeadContactByEdge error', e);
       return null;
     }
   }
@@ -1159,6 +1304,118 @@
     }
   }
 
+  async function chooseCallInstanceForClickToCall(locationId) {
+    const instances = await fetchVoipInstances(locationId);
+    if (!instances.length) {
+      alert(
+        'Nenhuma instancia VOIP foi encontrada para esta subconta. Verifique o cadastro da location.'
+      );
+      return null;
+    }
+
+    const withToken = instances.filter((item) =>
+      !!String((item && item.token) || '').trim()
+    );
+
+    if (!withToken.length) {
+      alert(
+        'As instancias desta subconta nao possuem token VOIP para iniciar a ligacao.'
+      );
+      return null;
+    }
+
+    if (withToken.length === 1) {
+      return withToken[0];
+    }
+
+    const optionsText = withToken
+      .map((item, index) => {
+        const status = String((item && item.wavoip_status) || '').trim();
+        return `${index + 1}) ${item.instance_name}${
+          status ? ` (status: ${status})` : ''
+        }`;
+      })
+      .join('\n');
+
+    while (true) {
+      const typed = prompt(
+        `Escolha de qual instancia deseja ligar:\n\n${optionsText}\n\nDigite o numero da instancia:`,
+        '1'
+      );
+
+      if (typed == null) return null;
+
+      const parsed = parseInstanceSelection(typed, withToken.length);
+      if (parsed.length !== 1) {
+        alert('Selecao invalida. Escolha apenas uma instancia da lista.');
+        continue;
+      }
+
+      return withToken[parsed[0] - 1];
+    }
+  }
+
+  function choosePhoneForClickToCall(phones) {
+    const normalizedPhones = Array.from(
+      new Set(
+        (phones || [])
+          .map((phone) => normalizePhone(phone))
+          .filter(Boolean)
+      )
+    );
+
+    if (!normalizedPhones.length) return null;
+    if (normalizedPhones.length === 1) return normalizedPhones[0];
+
+    const optionsText = normalizedPhones
+      .map((phone, index) => `${index + 1}) ${phone}`)
+      .join('\n');
+
+    while (true) {
+      const typed = prompt(
+        `Este contato possui mais de um numero. Escolha qual deseja ligar:\n\n${optionsText}\n\nDigite o numero da opcao:`,
+        '1'
+      );
+
+      if (typed == null) return null;
+
+      const selected = Number(String(typed || '').trim());
+      if (
+        !Number.isFinite(selected) ||
+        selected < 1 ||
+        selected > normalizedPhones.length
+      ) {
+        alert('Selecao invalida. Escolha um numero da lista.');
+        continue;
+      }
+
+      return normalizedPhones[selected - 1];
+    }
+  }
+
+  function openClickToCallWindow(data) {
+    if (!data) return;
+    const token = String((data && data.token) || '').trim();
+    const phone = String((data && data.phone) || '').trim();
+    if (!token || !phone) return;
+
+    const params = new URLSearchParams({
+      token,
+      phone,
+      start_if_ready: 'true',
+      close_after_call: 'true'
+    });
+
+    const name = String((data && data.name) || '').trim();
+    const photo = String((data && data.photo) || '').trim();
+    if (name) params.set('name', name);
+    if (photo) params.set('photo', photo);
+
+    const url = CALL_PAGE_URL + '?' + params.toString();
+    log('opening call URL:', url);
+    window.open(url, 'zaptos_voip_call', POPUP_OPTS);
+  }
+
   function getVoipStartResultError(result) {
     if (!result || typeof result !== 'object') return '';
     if (!result.err) return '';
@@ -1887,28 +2144,44 @@
     btn.style.pointerEvents = 'none';
 
     try {
-      let finalPhone = await fetchLeadPhoneByEdge();
-      if (!finalPhone) {
-        const extracted = extractContactInfoNewUI();
-        finalPhone = normalizePhone(extracted && extracted.phone);
+      const locationId = getLocationId();
+      if (!locationId) return;
+
+      const selectedInstance = await chooseCallInstanceForClickToCall(locationId);
+      if (!selectedInstance) return;
+
+      const edgeContact = await fetchLeadContactByEdge();
+      const extracted = extractContactInfoNewUI();
+
+      const phones = [];
+      if (edgeContact && Array.isArray(edgeContact.phones)) {
+        phones.push(...edgeContact.phones);
+      }
+      if (extracted && extracted.phone) {
+        phones.push(extracted.phone);
       }
 
+      const finalPhone = choosePhoneForClickToCall(phones);
       if (!finalPhone) {
-        await openVoipForManualDial(
-          'Nao foi possivel identificar o numero do contato. O VOIP foi aberto para discagem manual.'
-        );
+        alert('Nao foi possivel identificar o numero do contato para ligar.');
         return;
       }
 
-      const callResult = await startVoipLeadCall(finalPhone);
-      if (callResult && callResult.started === false) {
-        if (callResult.reason === 'user-cancel') {
-          return;
-        }
-        await openVoipForManualDial(
-          'Nao foi possivel iniciar a ligacao automaticamente. Use o VOIP para discagem manual.'
-        );
-      }
+      const finalName = firstNonEmptyString([
+        edgeContact && edgeContact.name,
+        extracted && extracted.name
+      ]);
+      const finalPhoto = firstNonEmptyString([
+        edgeContact && edgeContact.photo,
+        extracted && extracted.photo
+      ]);
+
+      openClickToCallWindow({
+        token: selectedInstance.token,
+        phone: finalPhone,
+        name: finalName,
+        photo: finalPhoto
+      });
     } catch (e) {
       errLog('onClickCallButton error', e);
       const msg = String((e && e.message) || e || '');
