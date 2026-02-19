@@ -2041,6 +2041,72 @@
     }
   }
 
+  function getUniqueTrimmedTokens(list) {
+    return Array.from(
+      new Set((list || []).map((v) => String(v || '').trim()).filter(Boolean))
+    );
+  }
+
+  async function isolateOutgoingTokenForCall(selectedToken) {
+    const target = String(selectedToken || '').trim();
+    if (!target) return async () => {};
+
+    const deviceApi = window.wavoip && window.wavoip.device ? window.wavoip.device : null;
+    if (!deviceApi || typeof deviceApi.add !== 'function') {
+      return async () => {};
+    }
+
+    const previousTokens = getUniqueTrimmedTokens(wavoipActiveTokens);
+    if (!previousTokens.length || previousTokens.length === 1) {
+      return async () => {};
+    }
+
+    let isolated = false;
+
+    if (typeof deviceApi.removeAll === 'function') {
+      try {
+        deviceApi.removeAll();
+        deviceApi.add(target);
+        isolated = true;
+      } catch (e) {
+        log('removeAll isolation failed', e);
+      }
+    } else if (typeof deviceApi.remove === 'function') {
+      try {
+        for (const token of previousTokens) {
+          if (token === target) continue;
+          try {
+            deviceApi.remove(token);
+          } catch (removeErr) {
+            log('remove token for isolation failed', token, removeErr);
+          }
+        }
+        deviceApi.add(target);
+        isolated = true;
+      } catch (e) {
+        log('remove isolation failed', e);
+      }
+    }
+
+    if (!isolated) {
+      return async () => {};
+    }
+
+    return async () => {
+      try {
+        for (const token of previousTokens) {
+          try {
+            deviceApi.add(token);
+          } catch (addErr) {
+            log('restore token after call start failed', token, addErr);
+          }
+        }
+      } catch (e) {
+        log('restore isolated tokens failed', e);
+      }
+    };
+  }
+
   async function chooseCallInstanceForClickToCall(locationId) {
     const instances = await fetchVoipInstances(locationId);
     if (!instances.length) {
@@ -2477,7 +2543,17 @@
       const deviceApi = window.wavoip.device;
       const methods = [
         deviceApi.enable,
-        deviceApi.enableDevice
+        deviceApi.enableDevice,
+        deviceApi.setPrimary,
+        deviceApi.setPrimaryDevice,
+        deviceApi.setDefault,
+        deviceApi.setDefaultDevice,
+        deviceApi.setMain,
+        deviceApi.setMainDevice,
+        deviceApi.setOutgoingDevice,
+        deviceApi.select,
+        deviceApi.selectDevice,
+        deviceApi.activate
       ].filter((fn) => typeof fn === 'function');
 
       for (const fn of methods) {
@@ -2493,7 +2569,7 @@
               await fn.call(deviceApi, { token: target });
               return;
             } catch (e3) {
-              log('enable token failed', e1 || e2 || e3);
+              log('set preferred token failed', e1 || e2 || e3);
             }
           }
         }
@@ -2516,22 +2592,44 @@
       }
     }
 
-    const payloads = [];
+    const callAttempts = [];
     if (selectedToken) {
-      payloads.push({ to: phone, fromTokens: [selectedToken], fromToken: selectedToken });
-      payloads.push({ to: phone, fromTokens: [selectedToken] });
-      payloads.push({ to: phone, fromToken: selectedToken });
+      const options = { fromTokens: [selectedToken], fromToken: selectedToken };
+      if (startCallFn) {
+        callAttempts.push(() => startCallFn(phone, options));
+        callAttempts.push(() => startCallFn(phone, { fromTokens: [selectedToken] }));
+        callAttempts.push(() => startCallFn(phone, { fromToken: selectedToken }));
+      }
+      if (startFn) {
+        callAttempts.push(() => startFn(phone, options));
+        callAttempts.push(() => startFn(phone, { fromTokens: [selectedToken] }));
+        callAttempts.push(() => startFn(phone, { fromToken: selectedToken }));
+      }
+      callAttempts.push(() =>
+        startPrimary({ to: phone, fromTokens: [selectedToken], fromToken: selectedToken })
+      );
+      callAttempts.push(() =>
+        startPrimary({ to: phone, fromTokens: [selectedToken] })
+      );
+      callAttempts.push(() =>
+        startPrimary({ to: phone, fromToken: selectedToken })
+      );
     }
-    payloads.push({ to: phone });
+    callAttempts.push(() => startPrimary({ to: phone }));
+    if (startCallFn) {
+      callAttempts.push(() => startCallFn(phone));
+    } else if (startFn) {
+      callAttempts.push(() => startFn(phone));
+    }
 
     // A conexao websocket de voz pode levar alguns segundos para estabilizar.
-    const maxAttempts = 12;
-    const retryDelayMs = 900;
+    const maxAttempts = 22;
+    const retryDelayMs = 1000;
     let lastReason = '';
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      for (const payload of payloads) {
+      for (const invoke of callAttempts) {
         try {
-          const result = await startPrimary(payload);
+          const result = await invoke();
           const errReason = getVoipStartResultError(result);
           if (errReason) {
             lastReason = errReason;
@@ -2609,6 +2707,8 @@
       window.wavoip.call.setInput(phone);
     }
 
+    const restoreOutgoingIsolation = await isolateOutgoingTokenForCall(selectedToken);
+
     if (
       window.wavoip &&
       window.wavoip.device &&
@@ -2641,9 +2741,16 @@
       window.wavoip.call.setInput(phone);
     }
 
-    const trigger = await triggerVoipCall(phone, selectedToken);
-    if (!trigger.ok) {
-      throw new Error(trigger.reason || 'Falha ao iniciar chamada no VOIP.');
+    // Pequeno atraso para o widget/API interna ficarem prontas apos abrir.
+    await wait(650);
+
+    try {
+      const trigger = await triggerVoipCall(phone, selectedToken);
+      if (!trigger.ok) {
+        throw new Error(trigger.reason || 'Falha ao iniciar chamada no VOIP.');
+      }
+    } finally {
+      await restoreOutgoingIsolation();
     }
 
     return { ok: true, started: true };
@@ -3040,4 +3147,3 @@
   log('ZaptosVoip – Nova UI V2 inicializado');
 })();
 // ======================= Fim do ZaptosVoip – Nova UI GHL (V2) =======================
-
