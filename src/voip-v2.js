@@ -1577,6 +1577,112 @@
     } catch (e) {
       log('setShowWidgetButton(false) failed', e);
     }
+
+    hideWavoipSettingsButton();
+  }
+
+  function findWavoipDialerRootForHeaderActions() {
+    const allNodes = Array.from(document.querySelectorAll('*'));
+    const versionNode = allNodes.find((el) => {
+      const text = String(el.textContent || '').trim();
+      return text && text.length <= 40 && /\bv\s*\d+\.\d+\.\d+/i.test(text);
+    });
+    if (!versionNode) return null;
+
+    let current = versionNode;
+    for (let i = 0; i < 8 && current && current.parentElement; i++) {
+      current = current.parentElement;
+      const rect = current.getBoundingClientRect();
+      if (!rect || rect.width < 220 || rect.height < 300) continue;
+      if (rect.left < window.innerWidth * 0.45) continue;
+
+      const buttons = current.querySelectorAll('button, [role="button"]');
+      if (buttons.length >= 4) return current;
+    }
+    return null;
+  }
+
+  function hideWavoipSettingsButtonByApi() {
+    try {
+      if (!window.wavoip || !window.wavoip.settings) return;
+      const settingsApi = window.wavoip.settings;
+      const candidates = [
+        'setShowSettingsButton',
+        'setShowWidgetSettingsButton',
+        'setShowWidgetSettings',
+        'setShowSettings'
+      ];
+
+      for (const fnName of candidates) {
+        const fn = settingsApi[fnName];
+        if (typeof fn !== 'function') continue;
+        try {
+          fn.call(settingsApi, false);
+        } catch (e) {
+          log(`${fnName}(false) failed`, e);
+        }
+      }
+    } catch (e) {
+      log('hideWavoipSettingsButtonByApi failed', e);
+    }
+  }
+
+  function hideWavoipSettingsButtonByDom() {
+    try {
+      const root = findWavoipDialerRootForHeaderActions();
+      if (!root) return;
+
+      const targetedSelectors = [
+        'button[aria-label*="setting" i]',
+        'button[aria-label*="config" i]',
+        'button[title*="setting" i]',
+        'button[title*="config" i]',
+        '[role="button"][aria-label*="setting" i]',
+        '[role="button"][aria-label*="config" i]',
+        '[data-testid*="setting" i]',
+        '[data-testid*="config" i]'
+      ];
+
+      let hiddenAny = false;
+      for (const selector of targetedSelectors) {
+        const matches = root.querySelectorAll(selector);
+        for (const node of matches) {
+          node.style.display = 'none';
+          node.style.visibility = 'hidden';
+          hiddenAny = true;
+        }
+      }
+
+      if (hiddenAny) return;
+
+      const rootRect = root.getBoundingClientRect();
+      const topButtons = Array.from(
+        root.querySelectorAll('button, [role="button"]')
+      )
+        .filter((node) => {
+          const rect = node.getBoundingClientRect();
+          if (!rect || rect.width < 14 || rect.height < 14) return false;
+          if (rect.top > rootRect.top + 64) return false;
+          if (rect.right < rootRect.right - 180) return false;
+          return true;
+        })
+        .sort(
+          (a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left
+        );
+
+      if (topButtons.length >= 3) {
+        const settingsBtn = topButtons[topButtons.length - 2];
+        settingsBtn.style.display = 'none';
+        settingsBtn.style.visibility = 'hidden';
+      }
+    } catch (e) {
+      log('hideWavoipSettingsButtonByDom failed', e);
+    }
+  }
+
+  function hideWavoipSettingsButton() {
+    hideWavoipSettingsButtonByApi();
+    hideWavoipSettingsButtonByDom();
   }
 
   async function initWavoipWebphone(forcePromptToken, options) {
@@ -2464,7 +2570,7 @@
     };
   }
 
-  async function startVoipLeadCall(phone) {
+  async function startVoipLeadCall(phone, preferredToken) {
     const locationId = getLocationId();
     const locationInstances = await fetchVoipInstancesWithTokenForLocation(locationId);
     if (!locationInstances.length) {
@@ -2482,9 +2588,21 @@
 
     enforceWavoipWidgetButtonHidden();
 
-    const selectedToken = await chooseOutgoingCallToken();
+    const requestedToken = String(preferredToken || '').trim();
+    const selectedToken = requestedToken || (await chooseOutgoingCallToken());
     if (selectedToken == null) {
       return { ok: false, started: false, reason: 'user-cancel' };
+    }
+
+    if (
+      requestedToken &&
+      !locationInstances.some(
+        (item) => String((item && item.token) || '').trim() === requestedToken
+      )
+    ) {
+      throw new Error(
+        'A instancia selecionada nao esta disponivel nesta subconta para realizar a ligacao.'
+      );
     }
 
     if (typeof window.wavoip.call.setInput === 'function') {
@@ -2516,6 +2634,8 @@
     ) {
       window.wavoip.widget.toggle();
     }
+
+    enforceWavoipWidgetButtonHidden();
 
     if (typeof window.wavoip.call.setInput === 'function') {
       window.wavoip.call.setInput(phone);
@@ -2822,21 +2942,15 @@
         return;
       }
 
-      const finalName = firstNonEmptyString([
-        edgeContact && edgeContact.name,
-        extracted && extracted.name
-      ]);
-      const finalPhoto = firstNonEmptyString([
-        edgeContact && edgeContact.photo,
-        extracted && extracted.photo
-      ]);
-
-      openClickToCallWindow({
-        token: selectedInstance.token,
-        phone: finalPhone,
-        name: finalName,
-        photo: finalPhoto
-      });
+      const callResult = await startVoipLeadCall(finalPhone, selectedInstance.token);
+      if (callResult && callResult.started === false) {
+        if (callResult.reason === 'user-cancel') {
+          return;
+        }
+        await openVoipForManualDial(
+          'Nao foi possivel iniciar a ligacao automaticamente. Use o VOIP para discagem manual.'
+        );
+      }
     } catch (e) {
       errLog('onClickCallButton error', e);
       const msg = String((e && e.message) || e || '');
@@ -2926,7 +3040,4 @@
   log('ZaptosVoip – Nova UI V2 inicializado');
 })();
 // ======================= Fim do ZaptosVoip – Nova UI GHL (V2) =======================
-
-
-
 
