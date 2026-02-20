@@ -411,6 +411,70 @@ function extractContactPhone(payload: any): string {
   );
 }
 
+function normalizePhone(value: unknown): string {
+  const raw = readString(value);
+  if (!raw) return '';
+  const cleaned = raw.replace(/[^\d+]/g, '').replace(/^\+/, '');
+  return readString(cleaned);
+}
+
+function pushPhone(target: string[], value: unknown) {
+  const normalized = normalizePhone(value);
+  if (!normalized) return;
+  if (!target.includes(normalized)) target.push(normalized);
+}
+
+function collectContactPhones(contact: any, primaryPhone: string): string[] {
+  const phones: string[] = [];
+  pushPhone(phones, primaryPhone);
+  pushPhone(phones, contact?.phone);
+  pushPhone(phones, contact?.mobile);
+  pushPhone(phones, contact?.mobilePhone);
+  pushPhone(phones, contact?.secondaryPhone);
+  pushPhone(phones, contact?.whatsappPhone);
+
+  const listCandidates = [
+    contact?.phones,
+    contact?.phoneNumbers,
+    contact?.additionalPhones,
+    contact?.additionalPhoneNumbers
+  ];
+
+  for (const list of listCandidates) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (item && typeof item === 'object') {
+        pushPhone(phones, (item as any).phone);
+        pushPhone(phones, (item as any).number);
+        pushPhone(phones, (item as any).value);
+      } else {
+        pushPhone(phones, item);
+      }
+    }
+  }
+
+  return phones;
+}
+
+function extractContactName(contact: any): string {
+  const explicitName = readString(contact?.name);
+  if (explicitName) return explicitName;
+  const firstName = readString(contact?.firstName ?? contact?.first_name);
+  const lastName = readString(contact?.lastName ?? contact?.last_name);
+  return readString([firstName, lastName].filter(Boolean).join(' '));
+}
+
+function extractContactPhoto(contact: any): string {
+  return readString(
+    contact?.profilePic ??
+      contact?.profilePicture ??
+      contact?.profilePhoto ??
+      contact?.photo ??
+      contact?.avatar ??
+      contact?.profileImage
+  );
+}
+
 async function getGhlAccessTokenForLocation(
   supabase: ReturnType<typeof createClient>,
   locationId: string
@@ -658,8 +722,7 @@ async function resolveContactData(
         status: 502,
         code: 'ghl_conversation_lookup_failed',
         error: 'Falha ao consultar conversa na GHL',
-        ghl_status: convo.status,
-        ghl_response: convo.json || convo.text
+        ghl_status: convo.status
       };
     }
 
@@ -685,14 +748,15 @@ async function resolveContactData(
       status: 502,
       code: 'ghl_contact_lookup_failed',
       error: 'Falha ao consultar contato na GHL',
-      ghl_status: contactResp.status,
-      ghl_response: contactResp.json || contactResp.text
+      ghl_status: contactResp.status
     };
   }
 
-  const phone = extractContactPhone(contactResp.json);
   const contact = contactResp.json?.contact || contactResp.json?.data?.contact || null;
-  const conversation = conversationPayload?.conversation || null;
+  const primaryPhone = extractContactPhone(contactResp.json);
+  const phones = collectContactPhones(contact, primaryPhone);
+  const name = extractContactName(contact);
+  const photo = extractContactPhoto(contact);
 
   return {
     ok: true,
@@ -700,9 +764,10 @@ async function resolveContactData(
     location_id: locationId,
     contact_id: resolvedContactId,
     conversation_id: conversationIdParam || null,
-    phone: phone || null,
-    contact,
-    conversation
+    phone: phones[0] || null,
+    phones,
+    name: name || null,
+    photo: photo || null
   };
 }
 
@@ -997,8 +1062,9 @@ Deno.serve(async (req) => {
       contact_id: contactResult.contact_id,
       conversation_id: contactResult.conversation_id,
       phone: contactResult.phone || null,
-      contact: contactResult.contact || null,
-      conversation: contactResult.conversation || null
+      phones: Array.isArray(contactResult.phones) ? contactResult.phones : [],
+      name: contactResult.name || null,
+      photo: contactResult.photo || null
     });
   }
 
