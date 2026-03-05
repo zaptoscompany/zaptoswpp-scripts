@@ -563,6 +563,7 @@
 
   function resolveSendButtonFromEventTarget(target) {
     if (!(target instanceof Element)) return null;
+    if (target.closest(`#${WRAPPER_ID}`)) return null;
 
     const composer = findComposerContainerFromInput();
     const actionBar = findComposerActionBar(composer);
@@ -586,7 +587,7 @@
     const candidate =
       button ||
       target.closest(
-        "[data-testid*='send'], [id*='send'], [aria-label*='send'], [aria-label*='enviar'], [title*='send'], [title*='enviar'], [class*='send'], [class*='enviar'], [role='button'], [tabindex], [onclick]"
+        "[data-testid*='send'], [id*='send'], [aria-label*='send'], [aria-label*='enviar'], [title*='send'], [title*='enviar'], [class*='send'], [class*='enviar'], [role='button']"
       );
 
     if (!candidate || candidate.closest(`#${WRAPPER_ID}`)) return null;
@@ -597,7 +598,7 @@
 
     const clickables = Array.from(
       actionBar.querySelectorAll(
-        "button, [role='button'], [data-testid], [aria-label], [title], [tabindex]"
+        "button, [role='button'], [data-testid], [aria-label], [title]"
       )
     ).filter((el) => isVisibleElement(el) && !el.closest(`#${WRAPPER_ID}`));
 
@@ -1102,6 +1103,7 @@
 
   function onDocumentClickCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (event.target instanceof Element && event.target.closest(`#${WRAPPER_ID}`)) return;
 
     const button = resolveSendButtonFromEventTarget(event.target);
     if (!button) return;
@@ -1122,6 +1124,7 @@
 
   function onDocumentPointerDownCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (event.target instanceof Element && event.target.closest(`#${WRAPPER_ID}`)) return;
 
     const button = resolveSendButtonFromEventTarget(event.target);
     if (!button) return;
@@ -1155,6 +1158,7 @@
 
     const activeInput = resolveActiveInput();
     if (!activeInput) return;
+    if (activeInput instanceof Element && activeInput.closest(`#${WRAPPER_ID}`)) return;
 
     const result = prepareMessageForSend();
     if (!result || result.ok === false) {
