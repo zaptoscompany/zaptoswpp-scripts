@@ -34,6 +34,7 @@
     uiMode: 'inline',
     listenersBound: false,
     replayLockUntil: 0,
+    statusFlashTimer: 0,
     lastHref: location.href
   };
 
@@ -639,10 +640,45 @@
   }
 
   function updateStatus(message, isError) {
+    if (state.statusFlashTimer) {
+      clearTimeout(state.statusFlashTimer);
+      state.statusFlashTimer = 0;
+    }
+
     const statusEl = document.getElementById(STATUS_ID);
     if (!statusEl) return;
     statusEl.textContent = readString(message);
     statusEl.style.color = isError ? '#ef4444' : '#93a1c6';
+  }
+
+  function getDefaultStatus() {
+    if (!state.locationId) {
+      return { message: 'Subconta nao detectada.', isError: true };
+    }
+    if (state.loading) {
+      return { message: 'Carregando instancias...', isError: false };
+    }
+    if (!state.instances.length) {
+      return {
+        message: 'Nenhuma instancia encontrada para esta subconta.',
+        isError: true
+      };
+    }
+    return {
+      message: `${state.instances.length} instancia(s) disponivel(is).`,
+      isError: false
+    };
+  }
+
+  function flashStatus(message, isError, durationMs) {
+    const timeout = Number(durationMs) > 0 ? Number(durationMs) : 1600;
+    updateStatus(message, isError);
+
+    state.statusFlashTimer = setTimeout(() => {
+      state.statusFlashTimer = 0;
+      const fallback = getDefaultStatus();
+      updateStatus(fallback.message, fallback.isError);
+    }, timeout);
   }
 
   function populateSelect(instances) {
@@ -902,11 +938,12 @@
 
     checkbox.addEventListener('change', () => {
       saveEnabled(checkbox.checked);
-      updateStatus(
+      flashStatus(
         state.enabled
           ? 'Switch ativo: mensagens serao prefixadas.'
           : 'Switch desativado.',
-        false
+        false,
+        1800
       );
     });
 
