@@ -33,6 +33,7 @@
     loading: false,
     uiMode: 'inline',
     listenersBound: false,
+    replayLockUntil: 0,
     lastHref: location.href
   };
 
@@ -372,6 +373,18 @@
     return pickMostLikelyInput(getInputCandidates(document));
   }
 
+  function syncStateFromUiControls() {
+    const checkbox = document.getElementById(CHECKBOX_ID);
+    if (checkbox instanceof HTMLInputElement) {
+      state.enabled = !!checkbox.checked;
+    }
+
+    const select = document.getElementById(SELECT_ID);
+    if (select instanceof HTMLSelectElement) {
+      state.selectedInstance = readString(select.value || state.selectedInstance);
+    }
+  }
+
   function getInputText(input) {
     if (!input) return '';
     if (input instanceof HTMLTextAreaElement) return String(input.value || '');
@@ -457,6 +470,55 @@
     return false;
   }
 
+  function hasPaperPlanePath(node) {
+    if (!(node instanceof Element)) return false;
+
+    const path =
+      node.matches('path')
+        ? node
+        : node.querySelector('path');
+
+    if (!(path instanceof SVGPathElement)) return false;
+
+    const d = readString(path.getAttribute('d'));
+    if (!d) return false;
+
+    // Icone de envio (paper plane) usado no composer do GHL.
+    return d.includes('M10.5 13.5L21 3') || d.includes('10.627 13.828');
+  }
+
+  function findInteractiveAncestor(start, stopAt) {
+    let node = start instanceof Element ? start : null;
+    const limit = stopAt instanceof Element ? stopAt : null;
+
+    for (let i = 0; i < 12 && node; i += 1) {
+      if (node.closest(`#${WRAPPER_ID}`)) return null;
+
+      const role = readString(node.getAttribute('role')).toLowerCase();
+      const id = readString(node.id).toLowerCase();
+      const className = readString(node.className).toLowerCase();
+      const hasOnclick = node.hasAttribute('onclick');
+      const rawTabIndex = node.getAttribute('tabindex');
+      const tabIndex = rawTabIndex == null ? null : Number(rawTabIndex);
+      const styleCursor =
+        node instanceof HTMLElement ? readString(node.style?.cursor).toLowerCase() : '';
+
+      if (node instanceof HTMLButtonElement) return node;
+      if (role === 'button') return node;
+      if (id.includes('send')) return node;
+      if (className.includes('send')) return node;
+      if (className.includes('cursor-pointer')) return node;
+      if (hasOnclick) return node;
+      if (tabIndex != null && !Number.isNaN(tabIndex) && tabIndex >= 0) return node;
+      if (styleCursor === 'pointer') return node;
+
+      if (limit && node === limit) break;
+      node = node.parentElement;
+    }
+
+    return null;
+  }
+
   function isLikelyComposerSendButton(button) {
     if (!button || !(button instanceof Element)) return false;
     if (button.closest(`#${WRAPPER_ID}`)) return false;
@@ -476,18 +538,17 @@
       ).filter((el) => isVisibleElement(el) && !el.closest(`#${WRAPPER_ID}`));
 
       if (buttons.length >= 2) {
-        let rightMost = buttons[0];
-        let rightMostRect = rightMost.getBoundingClientRect();
-
-        buttons.forEach((candidate) => {
-          const candidateRect = candidate.getBoundingClientRect();
-          if (candidateRect.right > rightMostRect.right) {
-            rightMost = candidate;
-            rightMostRect = candidateRect;
-          }
+        const sorted = [...buttons].sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          return ra.right - rb.right;
         });
 
-        if (rightMost === button || rightMost.contains(button) || button.contains(rightMost)) {
+        const candidateIndex = sorted.findIndex(
+          (el) => el === button || el.contains(button) || button.contains(el)
+        );
+
+        if (candidateIndex >= Math.max(0, sorted.length - 2)) {
           return true;
         }
       }
@@ -501,15 +562,80 @@
   function resolveSendButtonFromEventTarget(target) {
     if (!(target instanceof Element)) return null;
 
-    const button = target.closest('button, [role="button"]');
-    if (!button) return null;
-    if (button.closest(`#${WRAPPER_ID}`)) return null;
+    const composer = findComposerContainerFromInput();
+    const actionBar = findComposerActionBar(composer);
 
-    if (isLikelySendButton(button) || isLikelyComposerSendButton(button)) {
+    const button = target.closest('button, [role="button"]');
+    if (button && button.closest(`#${WRAPPER_ID}`)) return null;
+
+    if (button && (isLikelySendButton(button) || isLikelyComposerSendButton(button))) {
       return button;
     }
 
+    // Clique direto no SVG/PATH do aviao de envio.
+    const svgOrPath = target.closest('svg, path');
+    if (svgOrPath && hasPaperPlanePath(svgOrPath)) {
+      const interactive = findInteractiveAncestor(svgOrPath, actionBar || composer);
+      if (interactive && (!composer || composer.contains(interactive))) {
+        return interactive;
+      }
+    }
+
+    const candidate =
+      button ||
+      target.closest(
+        "[data-testid*='send'], [id*='send'], [aria-label*='send'], [aria-label*='enviar'], [title*='send'], [title*='enviar'], [class*='send'], [class*='enviar'], [role='button'], [tabindex], [onclick]"
+      );
+
+    if (!candidate || candidate.closest(`#${WRAPPER_ID}`)) return null;
+
+    if (!composer || !composer.contains(candidate)) return null;
+
+    if (!actionBar) return null;
+
+    const clickables = Array.from(
+      actionBar.querySelectorAll(
+        "button, [role='button'], [data-testid], [aria-label], [title], [tabindex]"
+      )
+    ).filter((el) => isVisibleElement(el) && !el.closest(`#${WRAPPER_ID}`));
+
+    if (!clickables.length) return null;
+
+    const sorted = [...clickables].sort(
+      (a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right
+    );
+
+    const idx = sorted.findIndex(
+      (el) => el === candidate || el.contains(candidate) || candidate.contains(el)
+    );
+
+    if (idx >= Math.max(0, sorted.length - 3)) {
+      return candidate;
+    }
+
     return null;
+  }
+
+  function replaySend(button) {
+    state.replayLockUntil = Date.now() + 800;
+
+    setTimeout(() => {
+      try {
+        let target = null;
+        if (button instanceof Element && document.contains(button)) {
+          target = button;
+        } else {
+          const composer = findComposerContainerFromInput();
+          target = findSendButtonInScope(composer) || findSendButtonInScope(document);
+        }
+
+        if (target instanceof HTMLElement) {
+          target.click();
+        }
+      } catch (error) {
+        log('Falha no replay do envio', error);
+      }
+    }, 35);
   }
 
   function updateStatus(message, isError) {
@@ -906,6 +1032,7 @@
   }
 
   function prepareMessageForSend(preferredButton) {
+    syncStateFromUiControls();
     if (!state.enabled) return true;
 
     const input = findComposerInput(preferredButton);
@@ -926,34 +1053,55 @@
     if (finalMessage !== rawMessage) {
       setInputText(input, finalMessage);
       log('Prefixo #switch aplicado', { instance });
+      return { ok: true, changed: true };
     }
 
-    return true;
+    return { ok: true, changed: false };
   }
 
   function onDocumentClickCapture(event) {
+    if (Date.now() < state.replayLockUntil) return;
+
     const button = resolveSendButtonFromEventTarget(event.target);
     if (!button) return;
 
-    const ok = prepareMessageForSend(button);
-    if (!ok) {
+    const result = prepareMessageForSend(button);
+    if (!result || result.ok === false) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      return;
+    }
+
+    if (result.changed) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      replaySend(button);
     }
   }
 
   function onDocumentPointerDownCapture(event) {
+    if (Date.now() < state.replayLockUntil) return;
+
     const button = resolveSendButtonFromEventTarget(event.target);
     if (!button) return;
 
-    const ok = prepareMessageForSend(button);
-    if (!ok) {
+    const result = prepareMessageForSend(button);
+    if (!result || result.ok === false) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      return;
+    }
+
+    if (result.changed) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      replaySend(button);
     }
   }
 
   function onDocumentKeydownCapture(event) {
+    if (Date.now() < state.replayLockUntil) return;
+
     if (
       event.key !== 'Enter' ||
       event.shiftKey ||
@@ -967,25 +1115,38 @@
     const activeInput = resolveActiveInput();
     if (!activeInput) return;
 
-    const ok = prepareMessageForSend();
-    if (!ok) {
+    const result = prepareMessageForSend();
+    if (!result || result.ok === false) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      return;
+    }
+
+    if (result.changed) {
+      return;
     }
   }
 
   function onDocumentSubmitCapture(event) {
+    if (Date.now() < state.replayLockUntil) return;
+
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
-    if (!state.enabled) return;
 
     const hasComposerInput = !!pickMostLikelyInput(getInputCandidates(form));
     if (!hasComposerInput) return;
 
-    const ok = prepareMessageForSend();
-    if (!ok) {
+    const result = prepareMessageForSend();
+    if (!result || result.ok === false) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      return;
+    }
+
+    if (result.changed) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      replaySend();
     }
   }
 
