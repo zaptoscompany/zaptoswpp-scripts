@@ -170,6 +170,41 @@
     return buttons.find((btn) => isLikelySendButton(btn)) || null;
   }
 
+  function findClearButtonInScope(scope) {
+    if (!scope) return null;
+    const buttons = Array.from(scope.querySelectorAll('button')).filter((el) =>
+      isVisibleElement(el)
+    );
+    return (
+      buttons.find((btn) => {
+        const text = readString(btn.textContent).toLowerCase();
+        return text === 'clear' || text === 'limpar';
+      }) || null
+    );
+  }
+
+  function findVoiceRecordAnchor(scope) {
+    if (!scope) return null;
+
+    const local =
+      scope.querySelector('#zaptos-rec-wrapper') ||
+      scope.querySelector('#zaptos-rec-btn');
+    if (local) return local.id === 'zaptos-rec-btn' ? local.parentElement : local;
+
+    const global =
+      document.getElementById('zaptos-rec-wrapper') ||
+      document.getElementById('zaptos-rec-btn');
+    if (!global) return null;
+
+    const anchor = global.id === 'zaptos-rec-btn' ? global.parentElement : global;
+    if (!anchor) return null;
+    if (scope === anchor || scope.contains(anchor) || anchor.parentElement === scope) {
+      return anchor;
+    }
+
+    return null;
+  }
+
   function findComposerContainerFromInput() {
     const input = pickMostLikelyInput(getInputCandidates(document));
     if (!input) return null;
@@ -308,6 +343,52 @@
 
     state.uiMode = 'inline';
     return null;
+  }
+
+  function placeSwitchWrapper(wrapper, host) {
+    if (!wrapper || !host) return;
+
+    const isFloating = state.uiMode === 'floating';
+    const isChannelHeader = state.uiMode === 'channel-header';
+
+    if (isChannelHeader) {
+      if (wrapper.parentElement !== host) host.appendChild(wrapper);
+      return;
+    }
+
+    if (!isFloating) {
+      const voiceAnchor = findVoiceRecordAnchor(host);
+      if (voiceAnchor && voiceAnchor.parentElement) {
+        const parent = voiceAnchor.parentElement;
+        if (wrapper.parentElement !== parent || wrapper.nextSibling !== voiceAnchor) {
+          parent.insertBefore(wrapper, voiceAnchor);
+        }
+        return;
+      }
+
+      const clearButton = findClearButtonInScope(host);
+      if (clearButton && clearButton.parentElement) {
+        const parent = clearButton.parentElement;
+        if (wrapper.parentElement !== parent || wrapper.nextSibling !== clearButton) {
+          parent.insertBefore(wrapper, clearButton);
+        }
+        return;
+      }
+
+      const sendButton = findSendButtonInScope(host);
+      if (sendButton && sendButton.parentElement) {
+        const parent = sendButton.parentElement;
+        if (wrapper.parentElement !== parent || wrapper.nextSibling !== sendButton) {
+          parent.insertBefore(wrapper, sendButton);
+        }
+        return;
+      }
+    }
+
+    if (wrapper.parentElement !== host) {
+      if (host.firstChild) host.insertBefore(wrapper, host.firstChild);
+      else host.appendChild(wrapper);
+    }
   }
 
   function getInputCandidates(root) {
@@ -964,16 +1045,7 @@
     if (SHOW_STATUS_TEXT) {
       wrapper.append(status);
     }
-    const sendButton = findSendButtonInScope(host);
-    if (isChannelHeader) {
-      host.appendChild(wrapper);
-    } else if (!isFloating && sendButton && sendButton.parentElement) {
-      sendButton.parentElement.insertBefore(wrapper, sendButton);
-    } else if (host.firstChild) {
-      host.insertBefore(wrapper, host.firstChild);
-    } else {
-      host.appendChild(wrapper);
-    }
+    placeSwitchWrapper(wrapper, host);
 
     populateSelect(state.instances);
   }
@@ -1036,24 +1108,7 @@
       refresh.style.color = '#1d4ed8';
     }
 
-    const sendButton = findSendButtonInScope(host);
-    if (isChannelHeader) {
-      if (wrapper.parentElement !== host) host.appendChild(wrapper);
-      return;
-    }
-
-    if (!isFloating && sendButton && sendButton.parentElement) {
-      const parent = sendButton.parentElement;
-      if (wrapper.parentElement !== parent || wrapper.nextSibling !== sendButton) {
-        parent.insertBefore(wrapper, sendButton);
-      }
-      return;
-    }
-
-    if (wrapper.parentElement !== host) {
-      if (host.firstChild) host.insertBefore(wrapper, host.firstChild);
-      else host.appendChild(wrapper);
-    }
+    placeSwitchWrapper(wrapper, host);
 
     if (!ALLOW_FLOATING_FALLBACK) {
       const floatingHost = document.getElementById(FLOATING_HOST_ID);
