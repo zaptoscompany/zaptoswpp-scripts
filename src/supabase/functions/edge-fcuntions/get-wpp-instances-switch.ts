@@ -27,10 +27,6 @@ function readString(value: unknown): string {
   return String(value).trim();
 }
 
-function readBoolean(value: unknown): boolean {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
-
 function resolveLocationId(req: Request, url: URL): string {
   return (
     readString(url.searchParams.get('location_id')) ||
@@ -101,11 +97,11 @@ async function queryUazapiByLocation(
   };
 }
 
-function normalizeInstanceRow(row: JsonMap) {
-  const name = readString(
+function normalizeInstanceName(row: JsonMap): string {
+  return readString(
     row.nome ??
       row.Nome ??
-    row.InstanceName ??
+      row.InstanceName ??
       row.instance_name ??
       row.instanceName ??
       row.Instance ??
@@ -115,39 +111,6 @@ function normalizeInstanceRow(row: JsonMap) {
       row.display_name ??
       row.uazapi_instance_name
   );
-
-  const id = readString(
-    row.idinstancia ??
-      row.idInstancia ??
-      row.IDInstancia ??
-    row.InstanceID ??
-      row.instance_id ??
-      row.instanceId ??
-      row.id ??
-      row.uuid ??
-      row.session ??
-      name
-  );
-
-  const status = readString(
-    row.ConnectionStatus ??
-      row.connection_status ??
-      row.status ??
-      row.State ??
-      row.state
-  ).toLowerCase();
-
-  const isActive = readBoolean(
-    row.is_active ?? row.active ?? row.enabled ?? row.is_enabled
-  );
-
-  return {
-    id: id || name,
-    instance_id: id || name,
-    instance_name: name,
-    status: status || null,
-    is_active: isActive
-  };
 }
 
 Deno.serve(async (req) => {
@@ -198,10 +161,7 @@ Deno.serve(async (req) => {
           ok: false,
           error:
             readString(queryResult.error?.message) ||
-            'Erro ao consultar tabela uazapi.',
-          location_id: locationId,
-          table: SOURCE_TABLE,
-          column: queryResult.column || null
+            'Erro ao consultar nomes das instancias.'
         },
         500
       );
@@ -210,49 +170,29 @@ Deno.serve(async (req) => {
       {
         ok: false,
         error:
-          'Nao foi possivel consultar a tabela public.uazapi.',
-        location_id: locationId,
-        table: SOURCE_TABLE
+          'Nao foi possivel consultar os nomes das instancias.'
       },
       500
     );
   }
 
-  const normalized = queryResult.rows
-    .map((row) => normalizeInstanceRow(row))
-    .filter((row) => !!row.instance_name);
+  const dedupedNames = new Map<string, string>();
+  for (const row of queryResult.rows) {
+    const name = normalizeInstanceName(row);
+    if (!name) continue;
 
-  const dedupedMap = new Map<string, (typeof normalized)[number]>();
-  for (const item of normalized) {
-    const key = item.instance_name.toLowerCase();
-    const prev = dedupedMap.get(key);
-    if (!prev) {
-      dedupedMap.set(key, item);
-      continue;
+    const key = name.toLowerCase();
+    if (!dedupedNames.has(key)) {
+      dedupedNames.set(key, name);
     }
-
-    dedupedMap.set(key, {
-      id: prev.id || item.id,
-      instance_id: prev.instance_id || item.instance_id,
-      instance_name: prev.instance_name || item.instance_name,
-      status: prev.status || item.status,
-      is_active: prev.is_active || item.is_active
-    });
   }
 
-  const instances = Array.from(dedupedMap.values()).sort((a, b) =>
-    a.instance_name.localeCompare(b.instance_name, 'pt-BR')
+  const names = Array.from(dedupedNames.values()).sort((a, b) =>
+    a.localeCompare(b, 'pt-BR')
   );
 
   return jsonResponse({
     ok: true,
-    location_id: locationId,
-    count: instances.length,
-    instances,
-    source: {
-      table: SOURCE_TABLE,
-      location_column: queryResult.column || null,
-      row_count: queryResult.rows.length
-    }
+    instances: names.map((instance_name) => ({ instance_name }))
   });
 });
