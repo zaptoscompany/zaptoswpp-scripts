@@ -17,7 +17,9 @@
   const REFRESH_ID = 'zaptos-switch-refresh';
   const STATUS_ID = 'zaptos-switch-status';
   const FLOATING_HOST_ID = 'zaptos-switch-floating-host';
+  const CHANNEL_HEADER_HOST_ID = 'zaptos-switch-channel-host';
   const CHECK_INTERVAL_MS = 1200;
+  const REQUEST_TIMEOUT_MS = 12000;
   const STORAGE_PREFIX = 'zaptos_wpp_switch';
   const ALLOW_FLOATING_FALLBACK =
     window.__ZAPTOS_SWITCH_FLOATING_FALLBACK__ === true;
@@ -79,6 +81,68 @@
   function saveSelectedInstance(name) {
     state.selectedInstance = readString(name);
     localStorage.setItem(getScopedStorageKey('instance'), state.selectedInstance);
+  }
+
+  function isWhatsAppQrLabelText(text) {
+    const normalized = readString(text)
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+    return normalized === 'whatsapp qr' || normalized === 'whats app qr';
+  }
+
+  function findWhatsAppQrLabel() {
+    const candidates = Array.from(
+      document.querySelectorAll('span.text-sm.font-medium.text-gray-700, span')
+    ).filter((el) => isVisibleElement(el));
+
+    for (const candidate of candidates) {
+      if (!isWhatsAppQrLabelText(candidate.textContent)) continue;
+
+      const row = candidate.closest(
+        "div.flex.flex-row.py-1.items-center.justify-end.rounded-t-lg, div[class*='rounded-t-lg'][class*='py-1']"
+      );
+      if (row && isVisibleElement(row)) return candidate;
+    }
+
+    return null;
+  }
+
+  function getChannelHeaderHost() {
+    const label = findWhatsAppQrLabel();
+    if (!label) return null;
+
+    const row = label.closest(
+      "div.flex.flex-row.py-1.items-center.justify-end.rounded-t-lg, div[class*='rounded-t-lg'][class*='py-1']"
+    );
+    if (!row) return null;
+
+    const leftBlock =
+      row.querySelector("div.flex.gap-6.items-center.w-full.min-w-0.overflow-hidden") ||
+      row.querySelector("div[class*='gap-6'][class*='w-full'][class*='items-center']");
+
+    if (!leftBlock) return null;
+
+    let host = row.querySelector(`#${CHANNEL_HEADER_HOST_ID}`);
+    if (host) return host;
+
+    host = document.createElement('div');
+    host.id = CHANNEL_HEADER_HOST_ID;
+    Object.assign(host.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      marginLeft: '8px',
+      minWidth: '0',
+      flexShrink: '0'
+    });
+
+    const titleContainer = label.closest('div');
+    if (titleContainer && titleContainer.parentElement === leftBlock) {
+      leftBlock.insertBefore(host, titleContainer.nextSibling);
+    } else {
+      leftBlock.appendChild(host);
+    }
+
+    return host;
   }
 
   function findBottomBar() {
@@ -209,6 +273,12 @@
   }
 
   function getUiHost() {
+    const channelHeaderHost = getChannelHeaderHost();
+    if (channelHeaderHost) {
+      state.uiMode = 'channel-header';
+      return channelHeaderHost;
+    }
+
     const leftIconGroup = findLeftIconGroup();
     if (leftIconGroup) {
       state.uiMode = 'inline';
@@ -439,7 +509,11 @@
     const names = rows
       .map((row) =>
         readString(
-          row?.instance_name ??
+          row?.nome ??
+            row?.Nome ??
+          row?.InstanceName ??
+            row?.instance_name ??
+            row?.instanceName ??
             row?.name ??
             row?.instance ??
             row?.label ??
@@ -472,6 +546,15 @@
     populateSelect(state.instances);
     updateStatus('Carregando instancias...', false);
 
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch {
+        /* ignore abort error */
+      }
+    }, REQUEST_TIMEOUT_MS);
+
     try {
       const url = new URL(EDGE_INSTANCES_URL);
       url.searchParams.set('location_id', state.locationId);
@@ -479,6 +562,7 @@
       const response = await fetch(url.toString(), {
         method: 'GET',
         credentials: 'omit',
+        signal: controller.signal,
         headers: {
           Accept: 'application/json',
           'x-wavoip-location-id': state.locationId
@@ -511,10 +595,15 @@
       }
     } catch (error) {
       state.instances = [];
-      populateSelect([]);
-      updateStatus(readString(error?.message || error) || 'Erro ao carregar.', true);
+      const message =
+        error?.name === 'AbortError'
+          ? 'Timeout ao buscar instancias. Clique em R para tentar novamente.'
+          : readString(error?.message || error) || 'Erro ao carregar.';
+      updateStatus(message, true);
     } finally {
+      clearTimeout(timeoutHandle);
       state.loading = false;
+      populateSelect(state.instances);
     }
   }
 
@@ -524,20 +613,29 @@
     const host = getUiHost();
     if (!host) return;
     const isFloating = state.uiMode === 'floating';
+    const isChannelHeader = state.uiMode === 'channel-header';
 
     const wrapper = document.createElement('div');
     wrapper.id = WRAPPER_ID;
     Object.assign(wrapper.style, {
       display: 'inline-flex',
       alignItems: 'center',
-      gap: '6px',
-      marginLeft: isFloating ? '0' : '8px',
-      padding: '2px 6px',
-      borderRadius: '8px',
-      background: isFloating ? '#ffffff' : 'rgba(15,23,42,0.06)',
-      border: isFloating ? '1px solid #cbd5e1' : 'none',
+      gap: isChannelHeader ? '4px' : '6px',
+      marginLeft: isFloating || isChannelHeader ? '0' : '8px',
+      padding: isChannelHeader ? '2px 8px' : '2px 6px',
+      borderRadius: isChannelHeader ? '999px' : '8px',
+      background: isFloating
+        ? '#ffffff'
+        : isChannelHeader
+          ? 'linear-gradient(180deg,#f9fbff 0%,#f3f7ff 100%)'
+          : 'rgba(15,23,42,0.06)',
+      border: isFloating
+        ? '1px solid #cbd5e1'
+        : isChannelHeader
+          ? '1px solid #dbe7ff'
+          : 'none',
       boxShadow: isFloating ? '0 8px 20px rgba(15,23,42,0.2)' : 'none',
-      maxWidth: isFloating ? '380px' : '420px'
+      maxWidth: isFloating ? '380px' : isChannelHeader ? '420px' : '420px'
     });
 
     const label = document.createElement('label');
@@ -546,7 +644,8 @@
       alignItems: 'center',
       gap: '4px',
       fontSize: '11px',
-      color: '#1f2937',
+      color: isChannelHeader ? '#1e3a8a' : '#1f2937',
+      fontWeight: isChannelHeader ? '600' : '500',
       whiteSpace: 'nowrap',
       userSelect: 'none'
     });
@@ -557,6 +656,9 @@
     checkbox.checked = !!state.enabled;
     checkbox.title = 'Ativar/desativar #switch automatico';
     checkbox.style.cursor = 'pointer';
+    checkbox.style.accentColor = '#2563eb';
+    checkbox.style.width = '14px';
+    checkbox.style.height = '14px';
 
     const labelText = document.createElement('span');
     labelText.textContent = 'Switch';
@@ -565,12 +667,12 @@
     const select = document.createElement('select');
     select.id = SELECT_ID;
     Object.assign(select.style, {
-      height: '24px',
-      minWidth: '150px',
-      maxWidth: '170px',
+      height: isChannelHeader ? '24px' : '24px',
+      minWidth: isChannelHeader ? '130px' : '150px',
+      maxWidth: isChannelHeader ? '150px' : '170px',
       fontSize: '11px',
       borderRadius: '6px',
-      border: '1px solid #cbd5e1',
+      border: isChannelHeader ? '1px solid #c7d7fe' : '1px solid #cbd5e1',
       padding: '0 6px',
       background: '#ffffff',
       color: '#0f172a'
@@ -580,16 +682,21 @@
     refreshButton.id = REFRESH_ID;
     refreshButton.type = 'button';
     refreshButton.title = 'Atualizar instancias';
-    refreshButton.textContent = 'R';
+    refreshButton.innerHTML =
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>';
     Object.assign(refreshButton.style, {
-      width: '24px',
-      height: '24px',
+      width: isChannelHeader ? '22px' : '24px',
+      height: isChannelHeader ? '22px' : '24px',
       borderRadius: '6px',
-      border: '1px solid #cbd5e1',
-      background: '#ffffff',
+      border: isChannelHeader ? '1px solid #c7d7fe' : '1px solid #cbd5e1',
+      background: isChannelHeader ? '#eef4ff' : '#ffffff',
+      color: '#1d4ed8',
       cursor: 'pointer',
       fontSize: '12px',
-      lineHeight: '1'
+      lineHeight: '1',
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center'
     });
 
     const status = document.createElement('span');
@@ -602,6 +709,9 @@
       overflow: 'hidden',
       textOverflow: 'ellipsis'
     });
+    if (isChannelHeader) {
+      status.style.display = 'none';
+    }
 
     checkbox.addEventListener('change', () => {
       saveEnabled(checkbox.checked);
@@ -626,7 +736,9 @@
 
     wrapper.append(label, select, refreshButton, status);
     const sendButton = findSendButtonInScope(host);
-    if (!isFloating && sendButton && sendButton.parentElement) {
+    if (isChannelHeader) {
+      host.appendChild(wrapper);
+    } else if (!isFloating && sendButton && sendButton.parentElement) {
       sendButton.parentElement.insertBefore(wrapper, sendButton);
     } else if (host.firstChild) {
       host.insertBefore(wrapper, host.firstChild);
@@ -653,14 +765,54 @@
       return;
     }
     const isFloating = state.uiMode === 'floating';
+    const isChannelHeader = state.uiMode === 'channel-header';
 
-    wrapper.style.marginLeft = isFloating ? '0' : '8px';
-    wrapper.style.background = isFloating ? '#ffffff' : 'rgba(15,23,42,0.06)';
-    wrapper.style.border = isFloating ? '1px solid #cbd5e1' : 'none';
+    wrapper.style.marginLeft = isFloating || isChannelHeader ? '0' : '8px';
+    wrapper.style.background = isFloating
+      ? '#ffffff'
+      : isChannelHeader
+        ? 'linear-gradient(180deg,#f9fbff 0%,#f3f7ff 100%)'
+        : 'rgba(15,23,42,0.06)';
+    wrapper.style.border = isFloating
+      ? '1px solid #cbd5e1'
+      : isChannelHeader
+        ? '1px solid #dbe7ff'
+        : 'none';
     wrapper.style.boxShadow = isFloating ? '0 8px 20px rgba(15,23,42,0.2)' : 'none';
     wrapper.style.maxWidth = isFloating ? '380px' : '420px';
+    wrapper.style.gap = isChannelHeader ? '4px' : '6px';
+    wrapper.style.padding = isChannelHeader ? '2px 8px' : '2px 6px';
+    wrapper.style.borderRadius = isChannelHeader ? '999px' : '8px';
+
+    const status = wrapper.querySelector(`#${STATUS_ID}`);
+    if (status instanceof HTMLElement) {
+      status.style.display = isChannelHeader ? 'none' : 'inline';
+    }
+
+    const label = wrapper.querySelector('label');
+    if (label instanceof HTMLElement) {
+      label.style.color = isChannelHeader ? '#1e3a8a' : '#1f2937';
+      label.style.fontWeight = isChannelHeader ? '600' : '500';
+    }
+
+    const select = wrapper.querySelector(`#${SELECT_ID}`);
+    if (select instanceof HTMLSelectElement) {
+      select.style.border = isChannelHeader ? '1px solid #c7d7fe' : '1px solid #cbd5e1';
+    }
+
+    const refresh = wrapper.querySelector(`#${REFRESH_ID}`);
+    if (refresh instanceof HTMLButtonElement) {
+      refresh.style.border = isChannelHeader ? '1px solid #c7d7fe' : '1px solid #cbd5e1';
+      refresh.style.background = isChannelHeader ? '#eef4ff' : '#ffffff';
+      refresh.style.color = '#1d4ed8';
+    }
 
     const sendButton = findSendButtonInScope(host);
+    if (isChannelHeader) {
+      if (wrapper.parentElement !== host) host.appendChild(wrapper);
+      return;
+    }
+
     if (!isFloating && sendButton && sendButton.parentElement) {
       const parent = sendButton.parentElement;
       if (wrapper.parentElement !== parent || wrapper.nextSibling !== sendButton) {

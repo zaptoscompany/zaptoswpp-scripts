@@ -7,29 +7,10 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, OPTIONS'
 };
 
-const CANDIDATE_TABLES = [
-  'wpp_instances',
-  'whatsapp_instances',
-  'voip_instances',
-  'wavoip_instances'
-];
-
-const CANDIDATE_LOCATION_COLUMNS = [
-  'location_id',
-  'locationId',
-  'locationid',
-  'LocationId',
-  'Location ID'
-];
+const SOURCE_TABLE = 'uazapi';
+const LOCATION_COLUMNS = ['LocationID', 'location_id', 'locationid', 'LocationId'];
 
 type JsonMap = Record<string, unknown>;
-type TableQueryResult = {
-  ok: boolean;
-  table: string;
-  column: string;
-  rows: JsonMap[];
-  error: any;
-};
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -75,16 +56,20 @@ function isSchemaLookupError(error: any): boolean {
   );
 }
 
-async function queryTableForLocation(
+async function queryUazapiByLocation(
   supabase: ReturnType<typeof createClient>,
-  table: string,
   locationId: string
-): Promise<TableQueryResult> {
+): Promise<{
+  ok: boolean;
+  column: string;
+  rows: JsonMap[];
+  error: any;
+}> {
   let lastError: any = null;
 
-  for (const column of CANDIDATE_LOCATION_COLUMNS) {
+  for (const column of LOCATION_COLUMNS) {
     const { data, error } = await supabase
-      .from(table)
+      .from(SOURCE_TABLE)
       .select('*')
       .eq(column, locationId)
       .limit(500);
@@ -94,7 +79,6 @@ async function queryTableForLocation(
       if (isSchemaLookupError(error)) continue;
       return {
         ok: false,
-        table,
         column,
         rows: [],
         error
@@ -103,7 +87,6 @@ async function queryTableForLocation(
 
     return {
       ok: true,
-      table,
       column,
       rows: Array.isArray(data) ? (data as JsonMap[]) : [],
       error: null
@@ -112,7 +95,6 @@ async function queryTableForLocation(
 
   return {
     ok: false,
-    table,
     column: '',
     rows: [],
     error: lastError
@@ -121,21 +103,38 @@ async function queryTableForLocation(
 
 function normalizeInstanceRow(row: JsonMap) {
   const name = readString(
-    row.instance_name ??
+    row.nome ??
+      row.Nome ??
+    row.InstanceName ??
+      row.instance_name ??
+      row.instanceName ??
+      row.Instance ??
       row.name ??
       row.instance ??
       row.label ??
       row.display_name ??
-      row.whatsapp_instance_name ??
-      row.wpp_instance_name
+      row.uazapi_instance_name
   );
 
   const id = readString(
-    row.instance_id ?? row.instanceId ?? row.id ?? row.uuid ?? name
+    row.idinstancia ??
+      row.idInstancia ??
+      row.IDInstancia ??
+    row.InstanceID ??
+      row.instance_id ??
+      row.instanceId ??
+      row.id ??
+      row.uuid ??
+      row.session ??
+      name
   );
 
   const status = readString(
-    row.status ?? row.connection_status ?? row.state
+    row.ConnectionStatus ??
+      row.connection_status ??
+      row.status ??
+      row.State ??
+      row.state
   ).toLowerCase();
 
   const isActive = readBoolean(
@@ -190,55 +189,36 @@ Deno.serve(async (req) => {
     auth: { autoRefreshToken: false, persistSession: false }
   });
 
-  const tableResults: TableQueryResult[] = [];
-  const allRows: JsonMap[] = [];
-  const successfulTables: Array<{ table: string; column: string; count: number }> = [];
+  const queryResult = await queryUazapiByLocation(supabase, locationId);
 
-  for (const table of CANDIDATE_TABLES) {
-    const result = await queryTableForLocation(supabase, table, locationId);
-    tableResults.push(result);
-
-    if (!result.ok) {
-      if (result.error && !isSchemaLookupError(result.error)) {
-        return jsonResponse(
-          {
-            ok: false,
-            error:
-              readString(result.error?.message) ||
-              'Erro ao consultar tabela de instancias.',
-            location_id: locationId,
-            table,
-            column: result.column || null
-          },
-          500
-        );
-      }
-      continue;
+  if (!queryResult.ok) {
+    if (queryResult.error && !isSchemaLookupError(queryResult.error)) {
+      return jsonResponse(
+        {
+          ok: false,
+          error:
+            readString(queryResult.error?.message) ||
+            'Erro ao consultar tabela uazapi.',
+          location_id: locationId,
+          table: SOURCE_TABLE,
+          column: queryResult.column || null
+        },
+        500
+      );
     }
-
-    successfulTables.push({
-      table: result.table,
-      column: result.column,
-      count: result.rows.length
-    });
-
-    allRows.push(...result.rows);
-  }
-
-  if (!successfulTables.length) {
     return jsonResponse(
       {
         ok: false,
         error:
-          'Nao foi possivel localizar uma tabela de instancias compativel.',
+          'Nao foi possivel consultar a tabela public.uazapi.',
         location_id: locationId,
-        tried_tables: CANDIDATE_TABLES
+        table: SOURCE_TABLE
       },
       500
     );
   }
 
-  const normalized = allRows
+  const normalized = queryResult.rows
     .map((row) => normalizeInstanceRow(row))
     .filter((row) => !!row.instance_name);
 
@@ -269,11 +249,10 @@ Deno.serve(async (req) => {
     location_id: locationId,
     count: instances.length,
     instances,
-    sources: successfulTables,
-    tried: tableResults.map((item) => ({
-      table: item.table,
-      ok: item.ok,
-      column: item.column || null
-    }))
+    source: {
+      table: SOURCE_TABLE,
+      location_column: queryResult.column || null,
+      row_count: queryResult.rows.length
+    }
   });
 });
