@@ -421,9 +421,15 @@
   function buildSwitchMessage(originalMessage, instanceName) {
     const normalized = String(originalMessage || '').replace(/\r\n/g, '\n');
     const prefix = `#switch:${instanceName}`;
+    const hasContent = !!normalized.trim();
+
+    if (!hasContent) {
+      return prefix;
+    }
 
     if (/^\s*#switch:/i.test(normalized)) {
-      return normalized.replace(/^\s*#switch:[^\n]*\n?/i, `${prefix}\n`);
+      const replaced = normalized.replace(/^\s*#switch:[^\n]*\n?/i, `${prefix}\n`);
+      return replaced.trim() === prefix ? prefix : replaced;
     }
 
     return `${prefix}\n${normalized}`;
@@ -449,6 +455,61 @@
     if (className.includes('send')) return true;
 
     return false;
+  }
+
+  function isLikelyComposerSendButton(button) {
+    if (!button || !(button instanceof Element)) return false;
+    if (button.closest(`#${WRAPPER_ID}`)) return false;
+
+    const rect = button.getBoundingClientRect();
+    if (rect.width < 18 || rect.height < 18) return false;
+    if (rect.bottom < window.innerHeight - 220) return false;
+    if (rect.right < window.innerWidth - 260) return false;
+
+    const composer = findComposerContainerFromInput();
+    if (composer && !composer.contains(button)) return false;
+
+    let node = button.parentElement;
+    for (let i = 0; i < 8 && node; i += 1) {
+      const buttons = Array.from(
+        node.querySelectorAll('button, [role="button"]')
+      ).filter((el) => isVisibleElement(el) && !el.closest(`#${WRAPPER_ID}`));
+
+      if (buttons.length >= 2) {
+        let rightMost = buttons[0];
+        let rightMostRect = rightMost.getBoundingClientRect();
+
+        buttons.forEach((candidate) => {
+          const candidateRect = candidate.getBoundingClientRect();
+          if (candidateRect.right > rightMostRect.right) {
+            rightMost = candidate;
+            rightMostRect = candidateRect;
+          }
+        });
+
+        if (rightMost === button || rightMost.contains(button) || button.contains(rightMost)) {
+          return true;
+        }
+      }
+
+      node = node.parentElement;
+    }
+
+    return false;
+  }
+
+  function resolveSendButtonFromEventTarget(target) {
+    if (!(target instanceof Element)) return null;
+
+    const button = target.closest('button, [role="button"]');
+    if (!button) return null;
+    if (button.closest(`#${WRAPPER_ID}`)) return null;
+
+    if (isLikelySendButton(button) || isLikelyComposerSendButton(button)) {
+      return button;
+    }
+
+    return null;
   }
 
   function updateStatus(message, isError) {
@@ -848,10 +909,12 @@
     if (!state.enabled) return true;
 
     const input = findComposerInput(preferredButton);
-    if (!input) return true;
+    if (!input) {
+      alert('Nao foi possivel inserir o comando #switch antes do envio.');
+      return false;
+    }
 
     const rawMessage = getInputText(input);
-    if (!rawMessage || !rawMessage.trim()) return true;
 
     const instance = readString(state.selectedInstance);
     if (!instance) {
@@ -869,11 +932,19 @@
   }
 
   function onDocumentClickCapture(event) {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
+    const button = resolveSendButtonFromEventTarget(event.target);
+    if (!button) return;
 
-    const button = target.closest('button, [role="button"]');
-    if (!button || !isLikelySendButton(button)) return;
+    const ok = prepareMessageForSend(button);
+    if (!ok) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function onDocumentPointerDownCapture(event) {
+    const button = resolveSendButtonFromEventTarget(event.target);
+    if (!button) return;
 
     const ok = prepareMessageForSend(button);
     if (!ok) {
@@ -903,12 +974,29 @@
     }
   }
 
+  function onDocumentSubmitCapture(event) {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    if (!state.enabled) return;
+
+    const hasComposerInput = !!pickMostLikelyInput(getInputCandidates(form));
+    if (!hasComposerInput) return;
+
+    const ok = prepareMessageForSend();
+    if (!ok) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }
+
   function bindGlobalListenersOnce() {
     if (state.listenersBound) return;
     state.listenersBound = true;
 
+    document.addEventListener('pointerdown', onDocumentPointerDownCapture, true);
     document.addEventListener('click', onDocumentClickCapture, true);
     document.addEventListener('keydown', onDocumentKeydownCapture, true);
+    document.addEventListener('submit', onDocumentSubmitCapture, true);
   }
 
   function onLocationChanged() {
