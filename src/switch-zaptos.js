@@ -16,6 +16,7 @@
   const SELECT_ID = 'zaptos-switch-select';
   const REFRESH_ID = 'zaptos-switch-refresh';
   const STATUS_ID = 'zaptos-switch-status';
+  const SHOW_STATUS_TEXT = false;
   const FLOATING_HOST_ID = 'zaptos-switch-floating-host';
   const CHANNEL_HEADER_HOST_ID = 'zaptos-switch-channel-host';
   const CHECK_INTERVAL_MS = 1200;
@@ -932,7 +933,7 @@
       overflow: 'hidden',
       textOverflow: 'ellipsis'
     });
-    if (isChannelHeader) {
+    if (!SHOW_STATUS_TEXT || isChannelHeader) {
       status.style.display = 'none';
     }
 
@@ -958,7 +959,10 @@
       fetchInstances(true);
     });
 
-    wrapper.append(label, select, refreshButton, status);
+    wrapper.append(label, select, refreshButton);
+    if (SHOW_STATUS_TEXT) {
+      wrapper.append(status);
+    }
     const sendButton = findSendButtonInScope(host);
     if (isChannelHeader) {
       host.appendChild(wrapper);
@@ -1010,7 +1014,7 @@
 
     const status = wrapper.querySelector(`#${STATUS_ID}`);
     if (status instanceof HTMLElement) {
-      status.style.display = isChannelHeader ? 'none' : 'inline';
+      status.style.display = !SHOW_STATUS_TEXT || isChannelHeader ? 'none' : 'inline';
     }
 
     const label = wrapper.querySelector('label');
