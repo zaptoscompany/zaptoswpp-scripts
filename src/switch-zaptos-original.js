@@ -22,6 +22,22 @@
   const CHECK_INTERVAL_MS = 1200;
   const REQUEST_TIMEOUT_MS = 12000;
   const STORAGE_PREFIX = 'zaptos_wpp_switch';
+  const CHANNEL_LABEL_KEYWORDS = [
+    'whatsapp qr',
+    'whats app qr',
+    'whatsapp',
+    'instagram',
+    'ig',
+    'pagina',
+    'pagina:',
+    'page',
+    'page:',
+    'messenger',
+    'facebook',
+    'comentario interno',
+    'comentário interno',
+    'internal comment'
+  ];
   const ALLOW_FLOATING_FALLBACK =
     window.__ZAPTOS_SWITCH_FLOATING_FALLBACK__ === true;
 
@@ -86,32 +102,69 @@
     localStorage.setItem(getScopedStorageKey('instance'), state.selectedInstance);
   }
 
-  function isWhatsAppQrLabelText(text) {
-    const normalized = readString(text)
+  function normalizeLabelText(text) {
+    return readString(text)
       .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
       .replace(/\s+/g, ' ');
-    return normalized === 'whatsapp qr' || normalized === 'whats app qr';
   }
 
-  function findWhatsAppQrLabel() {
-    const candidates = Array.from(
-      document.querySelectorAll('span.text-sm.font-medium.text-gray-700, span')
-    ).filter((el) => isVisibleElement(el));
+  function isKnownChannelLabelText(text) {
+    const normalized = normalizeLabelText(text);
+    return CHANNEL_LABEL_KEYWORDS.includes(normalized);
+  }
 
-    for (const candidate of candidates) {
-      if (!isWhatsAppQrLabelText(candidate.textContent)) continue;
+  function isLikelyChannelLabelText(text) {
+    const normalized = normalizeLabelText(text);
+    if (!normalized) return false;
+    if (isKnownChannelLabelText(normalized)) return true;
 
-      const row = candidate.closest(
-        "div.flex.flex-row.py-1.items-center.justify-end.rounded-t-lg, div[class*='rounded-t-lg'][class*='py-1']"
+    // Fallback defensivo: evita usar spans aleatorios do sistema.
+    if (normalized.length > 40) return false;
+    return /^[a-z0-9 :\-\u00c0-\u017f]+$/i.test(normalized);
+  }
+
+  function findComposerChannelLabel() {
+    const rowSelector =
+      "div.flex.flex-row.py-1.items-center.justify-end.rounded-t-lg, div[class*='rounded-t-lg'][class*='py-1']";
+    const rows = Array.from(document.querySelectorAll(rowSelector))
+      .filter((el) => isVisibleElement(el))
+      .sort(
+        (a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top
       );
-      if (row && isVisibleElement(row)) return candidate;
+
+    for (const row of rows) {
+      const leftBlock =
+        row.querySelector(
+          "div.flex.gap-6.items-center.w-full.min-w-0.overflow-hidden"
+        ) ||
+        row.querySelector(
+          "div[class*='gap-6'][class*='w-full'][class*='items-center']"
+        );
+      if (!leftBlock) continue;
+
+      const labels = Array.from(
+        leftBlock.querySelectorAll('span.text-sm.font-medium.text-gray-700, span')
+      ).filter((el) => isVisibleElement(el));
+      if (!labels.length) continue;
+
+      const preferred = labels.find((label) =>
+        isKnownChannelLabelText(label.textContent)
+      );
+      if (preferred) return preferred;
+
+      const fallback = labels.find((label) =>
+        isLikelyChannelLabelText(label.textContent)
+      );
+      if (fallback) return fallback;
     }
 
     return null;
   }
 
   function getChannelHeaderHost() {
-    const label = findWhatsAppQrLabel();
+    const label = findComposerChannelLabel();
     if (!label) return null;
 
     const row = label.closest(
@@ -165,8 +218,10 @@
   function findSendButtonInScope(scope) {
     if (!scope) return null;
     const buttons = Array.from(
-      scope.querySelectorAll('button, [role="button"]')
-    ).filter((el) => isVisibleElement(el));
+      scope.querySelectorAll(
+        "#conv-send-button-simple, [id^='conv-send-button'], button, [role='button'], [data-testid*='send']"
+      )
+    ).filter((el) => isVisibleElement(el) && !el.closest(`#${WRAPPER_ID}`));
     return buttons.find((btn) => isLikelySendButton(btn)) || null;
   }
 
@@ -310,7 +365,28 @@
     return host;
   }
 
+  function isTemplatesContext() {
+    const path = readString(location.pathname).toLowerCase();
+    return path.includes('/conversations/templates');
+  }
+
+  function teardownSwitchUi() {
+    const wrapper = document.getElementById(WRAPPER_ID);
+    if (wrapper) wrapper.remove();
+
+    const channelHost = document.getElementById(CHANNEL_HEADER_HOST_ID);
+    if (channelHost) channelHost.remove();
+
+    const floatingHost = document.getElementById(FLOATING_HOST_ID);
+    if (floatingHost) floatingHost.remove();
+  }
+
   function getUiHost() {
+    if (isTemplatesContext()) {
+      state.uiMode = 'inline';
+      return null;
+    }
+
     const channelHeaderHost = getChannelHeaderHost();
     if (channelHeaderHost) {
       state.uiMode = 'channel-header';
@@ -393,19 +469,74 @@
 
   function getInputCandidates(root) {
     const scope = root || document;
+    const explicitComposerTextarea = document.getElementById(
+      'conv-composer-textarea-input'
+    );
+
+    const isMessagePlaceholder = (value) => {
+      const normalized = readString(value).toLowerCase();
+      if (!normalized) return true;
+      return normalized.includes('mensagem') || normalized.includes('message');
+    };
+
+    const isComposerMessageInput = (input) => {
+      if (!input) return false;
+      if (!isVisibleElement(input)) return false;
+      if (input.closest(`#${WRAPPER_ID}`)) return false;
+      if (input.id === 'conv-composer-textarea-input') return true;
+
+      if (input instanceof HTMLTextAreaElement) {
+        const placeholderOk =
+          isMessagePlaceholder(input.getAttribute('placeholder')) ||
+          isMessagePlaceholder(input.getAttribute('aria-label'));
+        if (!placeholderOk) return false;
+      }
+
+      let node = input.parentElement;
+      for (let i = 0; i < 12 && node; i += 1) {
+        const explicitSend =
+          node.querySelector('#conv-send-button-simple') ||
+          node.querySelector("[id^='conv-send-button']");
+        if (explicitSend && isVisibleElement(explicitSend)) {
+          return true;
+        }
+
+        const sendButton = findSendButtonInScope(node);
+        if (sendButton) return true;
+
+        node = node.parentElement;
+      }
+
+      return false;
+    };
+
     const textareaCandidates = Array.from(
       scope.querySelectorAll(
         "textarea[placeholder*='mensagem'], textarea[placeholder*='message'], textarea"
       )
-    ).filter((el) => isVisibleElement(el) && !el.disabled && !el.readOnly);
+    ).filter(
+      (el) =>
+        isVisibleElement(el) &&
+        !el.disabled &&
+        !el.readOnly &&
+        isComposerMessageInput(el)
+    );
 
     const editableCandidates = Array.from(
       scope.querySelectorAll(
         "div[contenteditable='true'][role='textbox'], div[contenteditable='true']"
       )
-    ).filter((el) => isVisibleElement(el));
+    ).filter((el) => isVisibleElement(el) && isComposerMessageInput(el));
 
-    return [...textareaCandidates, ...editableCandidates];
+    const explicitCandidates =
+      explicitComposerTextarea instanceof HTMLTextAreaElement &&
+      isVisibleElement(explicitComposerTextarea) &&
+      !explicitComposerTextarea.disabled &&
+      !explicitComposerTextarea.readOnly
+        ? [explicitComposerTextarea]
+        : [];
+
+    return [...explicitCandidates, ...textareaCandidates, ...editableCandidates];
   }
 
   function pickMostLikelyInput(candidates) {
@@ -420,7 +551,9 @@
     let node = button;
     for (let i = 0; i < 7 && node; i += 1) {
       const candidate = pickMostLikelyInput(getInputCandidates(node));
-      if (candidate) return candidate;
+      if (candidate) {
+        return candidate;
+      }
       node = node.parentElement;
     }
     return null;
@@ -429,16 +562,24 @@
   function resolveActiveInput() {
     const active = document.activeElement;
     if (!active) return null;
+    const candidates = getInputCandidates(document);
 
     if (active instanceof HTMLTextAreaElement) {
-      if (isVisibleElement(active) && !active.disabled && !active.readOnly) {
+      if (
+        isVisibleElement(active) &&
+        !active.disabled &&
+        !active.readOnly &&
+        candidates.includes(active)
+      ) {
         return active;
       }
     }
 
     if (active instanceof HTMLElement) {
       const editable = active.closest("div[contenteditable='true']");
-      if (editable && isVisibleElement(editable)) return editable;
+      if (editable && isVisibleElement(editable) && candidates.includes(editable)) {
+        return editable;
+      }
     }
 
     return null;
@@ -541,8 +682,21 @@
     const dataTestId = readString(button.getAttribute('data-testid')).toLowerCase();
     const id = readString(button.id).toLowerCase();
     const className = readString(button.className).toLowerCase();
+    const denyHints = `${aria} ${title} ${text} ${dataTestId} ${id} ${className}`;
 
-    if (type === 'submit') return true;
+    if (
+      /clear|limpar|delete|trash|tag|emoji|attach|anexo|microfone|record|dropdown|option|options|arrow|seta|cancelar|cancel|salvar|save/.test(
+        denyHints
+      )
+    ) {
+      return false;
+    }
+
+    if (id === 'conv-send-button-simple' || id.startsWith('conv-send-button')) {
+      return true;
+    }
+    // Evita capturar submits de outros formulários (ex.: Salvar/Cancelar em painéis laterais).
+    if (type === 'submit' && !/send|enviar/.test(denyHints)) return false;
     if (/send|enviar/.test(aria)) return true;
     if (/send|enviar/.test(title)) return true;
     if (/send|enviar/.test(text)) return true;
@@ -605,6 +759,21 @@
   function isLikelyComposerSendButton(button) {
     if (!button || !(button instanceof Element)) return false;
     if (button.closest(`#${WRAPPER_ID}`)) return false;
+    const aria = readString(button.getAttribute('aria-label')).toLowerCase();
+    const title = readString(button.getAttribute('title')).toLowerCase();
+    const text = readString(button.textContent).toLowerCase();
+    const dataTestId = readString(button.getAttribute('data-testid')).toLowerCase();
+    const id = readString(button.id).toLowerCase();
+    const className = readString(button.className).toLowerCase();
+    if (/dropdown|option|options|arrow|seta/.test(`${id} ${className}`)) {
+      return false;
+    }
+    const hasSendSemantics =
+      id === 'conv-send-button-simple' ||
+      id.startsWith('conv-send-button') ||
+      /send|enviar/.test(`${aria} ${title} ${text} ${dataTestId} ${id} ${className}`) ||
+      hasPaperPlanePath(button);
+    if (!hasSendSemantics) return false;
 
     const rect = button.getBoundingClientRect();
     if (rect.width < 18 || rect.height < 18) return false;
@@ -649,7 +818,9 @@
     const composer = findComposerContainerFromInput();
     const actionBar = findComposerActionBar(composer);
 
-    const button = target.closest('button, [role="button"]');
+    const button = target.closest(
+      "#conv-send-button-simple, [id^='conv-send-button'], button, [role='button'], [data-testid*='send']"
+    );
     if (button && button.closest(`#${WRAPPER_ID}`)) return null;
 
     if (button && (isLikelySendButton(button) || isLikelyComposerSendButton(button))) {
@@ -660,7 +831,11 @@
     const svgOrPath = target.closest('svg, path');
     if (svgOrPath && hasPaperPlanePath(svgOrPath)) {
       const interactive = findInteractiveAncestor(svgOrPath, actionBar || composer);
-      if (interactive && (!composer || composer.contains(interactive))) {
+      if (
+        interactive &&
+        (!composer || composer.contains(interactive)) &&
+        (isLikelySendButton(interactive) || isLikelyComposerSendButton(interactive))
+      ) {
         return interactive;
       }
     }
@@ -668,36 +843,17 @@
     const candidate =
       button ||
       target.closest(
-        "[data-testid*='send'], [id*='send'], [aria-label*='send'], [aria-label*='enviar'], [title*='send'], [title*='enviar'], [class*='send'], [class*='enviar'], [role='button']"
+        "#conv-send-button-simple, [id^='conv-send-button'], [data-testid*='send'], button[aria-label*='send'], button[aria-label*='enviar'], [title*='send'], [title*='enviar'], [class*='send'], [class*='enviar']"
       );
 
     if (!candidate || candidate.closest(`#${WRAPPER_ID}`)) return null;
 
     if (!composer || !composer.contains(candidate)) return null;
-
-    if (!actionBar) return null;
-
-    const clickables = Array.from(
-      actionBar.querySelectorAll(
-        "button, [role='button'], [data-testid], [aria-label], [title]"
-      )
-    ).filter((el) => isVisibleElement(el) && !el.closest(`#${WRAPPER_ID}`));
-
-    if (!clickables.length) return null;
-
-    const sorted = [...clickables].sort(
-      (a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right
-    );
-
-    const idx = sorted.findIndex(
-      (el) => el === candidate || el.contains(candidate) || candidate.contains(el)
-    );
-
-    if (idx >= Math.max(0, sorted.length - 3)) {
-      return candidate;
+    if (!isLikelySendButton(candidate) && !isLikelyComposerSendButton(candidate)) {
+      return null;
     }
-
-    return null;
+    if (actionBar && !actionBar.contains(candidate)) return null;
+    return candidate;
   }
 
   function replaySend(button) {
@@ -915,6 +1071,7 @@
 
   function createUi() {
     if (document.getElementById(WRAPPER_ID)) return;
+    if (isTemplatesContext()) return;
 
     const host = getUiHost();
     if (!host) return;
@@ -1129,6 +1286,8 @@
   }
 
   function prepareMessageForSend(preferredButton) {
+    if (isTemplatesContext()) return true;
+
     syncStateFromUiControls();
     if (!state.enabled) return true;
 
@@ -1158,6 +1317,7 @@
 
   function onDocumentClickCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
     if (event.target instanceof Element && event.target.closest(`#${WRAPPER_ID}`)) return;
 
     const button = resolveSendButtonFromEventTarget(event.target);
@@ -1179,6 +1339,7 @@
 
   function onDocumentPointerDownCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
     if (event.target instanceof Element && event.target.closest(`#${WRAPPER_ID}`)) return;
 
     const button = resolveSendButtonFromEventTarget(event.target);
@@ -1200,6 +1361,7 @@
 
   function onDocumentKeydownCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
 
     if (
       event.key !== 'Enter' ||
@@ -1223,18 +1385,24 @@
     }
 
     if (result.changed) {
-      return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      replaySend();
     }
   }
 
   function onDocumentSubmitCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
 
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
 
-    const hasComposerInput = !!pickMostLikelyInput(getInputCandidates(form));
-    if (!hasComposerInput) return;
+    const composerInput = pickMostLikelyInput(getInputCandidates(form));
+    if (!composerInput) return;
+
+    const sendButtonInForm = findSendButtonInScope(form);
+    if (!sendButtonInForm) return;
 
     const result = prepareMessageForSend();
     if (!result || result.ok === false) {
@@ -1274,6 +1442,11 @@
   }
 
   function ensureUiAndData() {
+    if (isTemplatesContext()) {
+      teardownSwitchUi();
+      return;
+    }
+
     createUi();
     syncWrapperPlacement();
     syncUiWithState();
