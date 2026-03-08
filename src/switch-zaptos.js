@@ -365,7 +365,28 @@
     return host;
   }
 
+  function isTemplatesContext() {
+    const path = readString(location.pathname).toLowerCase();
+    return path.includes('/conversations/templates');
+  }
+
+  function teardownSwitchUi() {
+    const wrapper = document.getElementById(WRAPPER_ID);
+    if (wrapper) wrapper.remove();
+
+    const channelHost = document.getElementById(CHANNEL_HEADER_HOST_ID);
+    if (channelHost) channelHost.remove();
+
+    const floatingHost = document.getElementById(FLOATING_HOST_ID);
+    if (floatingHost) floatingHost.remove();
+  }
+
   function getUiHost() {
+    if (isTemplatesContext()) {
+      state.uiMode = 'inline';
+      return null;
+    }
+
     const channelHeaderHost = getChannelHeaderHost();
     if (channelHeaderHost) {
       state.uiMode = 'channel-header';
@@ -1050,6 +1071,7 @@
 
   function createUi() {
     if (document.getElementById(WRAPPER_ID)) return;
+    if (isTemplatesContext()) return;
 
     const host = getUiHost();
     if (!host) return;
@@ -1264,6 +1286,8 @@
   }
 
   function prepareMessageForSend(preferredButton) {
+    if (isTemplatesContext()) return true;
+
     syncStateFromUiControls();
     if (!state.enabled) return true;
 
@@ -1293,6 +1317,7 @@
 
   function onDocumentClickCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
     if (event.target instanceof Element && event.target.closest(`#${WRAPPER_ID}`)) return;
 
     const button = resolveSendButtonFromEventTarget(event.target);
@@ -1314,6 +1339,7 @@
 
   function onDocumentPointerDownCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
     if (event.target instanceof Element && event.target.closest(`#${WRAPPER_ID}`)) return;
 
     const button = resolveSendButtonFromEventTarget(event.target);
@@ -1335,6 +1361,7 @@
 
   function onDocumentKeydownCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
 
     if (
       event.key !== 'Enter' ||
@@ -1366,6 +1393,7 @@
 
   function onDocumentSubmitCapture(event) {
     if (Date.now() < state.replayLockUntil) return;
+    if (isTemplatesContext()) return;
 
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
@@ -1414,6 +1442,11 @@
   }
 
   function ensureUiAndData() {
+    if (isTemplatesContext()) {
+      teardownSwitchUi();
+      return;
+    }
+
     createUi();
     syncWrapperPlacement();
     syncUiWithState();
