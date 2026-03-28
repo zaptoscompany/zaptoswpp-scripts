@@ -28,12 +28,13 @@
 
   const commandBuilders = Object.assign(
     {
-      react: (messageId, emoji) => `#reactmessage:${messageId}:${emoji}`,
-      edit: (messageId, text) => `#editmessage:${messageId}:${text}`,
+      react: (messageId, emoji) => `#reactmessage:${messageId}\n${emoji}`,
+      edit: (messageId, text) => `#editmessage:${messageId}\n${text}`,
       delete: (messageId) => `#delmessage:${messageId}`
     },
     window.__ZAPTOS_ACTIONS_COMMANDS__ || {}
   );
+  const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '👏', '🔥'];
 
   const TOKEN_REGEX = /\b[A-Za-z0-9][A-Za-z0-9_-]{7,80}\b/g;
   const STOP_TOKENS = new Set([
@@ -87,10 +88,10 @@
   }
 
   function normalizeMessagePayload(text) {
-    return readString(text)
+    return String(text == null ? '' : text)
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n')
-      .replace(/\n/g, '\\n');
+      .trim();
   }
 
   function isLikelyMenuTrigger(target) {
@@ -437,40 +438,135 @@
 
   function getInputCandidates(root) {
     const scope = root || document;
+    const explicitComposerTextarea = document.getElementById(
+      'conv-composer-textarea-input'
+    );
+
+    const isMessagePlaceholder = (value) => {
+      const normalized = readString(value).toLowerCase();
+      if (!normalized) return true;
+      return normalized.includes('mensagem') || normalized.includes('message');
+    };
+
+    const isComposerMessageInput = (input) => {
+      if (!input) return false;
+      if (!isVisibleElement(input)) return false;
+      if (input.id === 'conv-composer-textarea-input') return true;
+
+      if (input instanceof HTMLTextAreaElement) {
+        const placeholderOk =
+          isMessagePlaceholder(input.getAttribute('placeholder')) ||
+          isMessagePlaceholder(input.getAttribute('aria-label'));
+        if (!placeholderOk) return false;
+      }
+
+      let node = input.parentElement;
+      for (let i = 0; i < 12 && node; i += 1) {
+        const explicitSend =
+          node.querySelector('#conv-send-button-simple') ||
+          node.querySelector("[id^='conv-send-button']");
+        if (explicitSend && isVisibleElement(explicitSend)) {
+          return true;
+        }
+
+        const sendButton = findSendButtonInScope(node);
+        if (sendButton) return true;
+
+        node = node.parentElement;
+      }
+
+      return false;
+    };
+
     const textareaCandidates = Array.from(
       scope.querySelectorAll(
-        "textarea#conv-composer-textarea-input, textarea[placeholder*='mensagem'], textarea[placeholder*='message'], textarea"
+        "textarea[placeholder*='mensagem'], textarea[placeholder*='message'], textarea"
       )
-    ).filter((el) => isVisibleElement(el) && !el.disabled && !el.readOnly);
+    ).filter(
+      (el) =>
+        isVisibleElement(el) &&
+        !el.disabled &&
+        !el.readOnly &&
+        isComposerMessageInput(el)
+    );
 
     const editableCandidates = Array.from(
       scope.querySelectorAll(
         "div[contenteditable='true'][role='textbox'], div[contenteditable='true']"
       )
-    ).filter((el) => isVisibleElement(el));
+    ).filter((el) => isVisibleElement(el) && isComposerMessageInput(el));
 
-    return [...textareaCandidates, ...editableCandidates];
+    const explicitCandidates =
+      explicitComposerTextarea instanceof HTMLTextAreaElement &&
+      isVisibleElement(explicitComposerTextarea) &&
+      !explicitComposerTextarea.disabled &&
+      !explicitComposerTextarea.readOnly
+        ? [explicitComposerTextarea]
+        : [];
+
+    return [...explicitCandidates, ...textareaCandidates, ...editableCandidates];
   }
 
   function pickMostLikelyInput(candidates) {
     if (!candidates.length) return null;
-    return [...candidates].sort(
+    const sorted = [...candidates].sort(
       (a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom
-    )[0];
+    );
+    return sorted[0] || null;
   }
 
-  function resolveComposerInput() {
+  function findInputNearButton(button) {
+    let node = button;
+    for (let i = 0; i < 7 && node; i += 1) {
+      const candidate = pickMostLikelyInput(getInputCandidates(node));
+      if (candidate) {
+        return candidate;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function resolveActiveInput() {
     const active = document.activeElement;
-    if (active instanceof HTMLTextAreaElement && isVisibleElement(active)) {
-      if (!active.disabled && !active.readOnly) return active;
+    if (!active) return null;
+    const candidates = getInputCandidates(document);
+
+    if (active instanceof HTMLTextAreaElement) {
+      if (
+        isVisibleElement(active) &&
+        !active.disabled &&
+        !active.readOnly &&
+        candidates.includes(active)
+      ) {
+        return active;
+      }
     }
 
     if (active instanceof HTMLElement) {
       const editable = active.closest("div[contenteditable='true']");
-      if (editable && isVisibleElement(editable)) return editable;
+      if (editable && isVisibleElement(editable) && candidates.includes(editable)) {
+        return editable;
+      }
     }
 
+    return null;
+  }
+
+  function findComposerInput(preferredButton) {
+    if (preferredButton) {
+      const near = findInputNearButton(preferredButton);
+      if (near) return near;
+    }
+
+    const active = resolveActiveInput();
+    if (active) return active;
+
     return pickMostLikelyInput(getInputCandidates(document));
+  }
+
+  function resolveComposerInput() {
+    return findComposerInput();
   }
 
   function getInputText(input) {
@@ -629,10 +725,22 @@
     const messageId = ensureMessageId(context);
     if (!messageId) return;
 
-    const reaction = window.prompt('Digite o emoji da reacao:', '👍');
+    const optionsText = REACTION_EMOJIS.map((emoji, idx) => `${idx + 1}=${emoji}`).join('  ');
+    const reaction = window.prompt(
+      `Escolha uma reacao (${optionsText})\nDigite o numero ou o emoji:`,
+      REACTION_EMOJIS[0]
+    );
     if (reaction == null) return;
 
-    const emoji = normalizeMessagePayload(reaction);
+    const pickedIndex = Number(reaction);
+    const fromIndex =
+      Number.isInteger(pickedIndex) &&
+      pickedIndex >= 1 &&
+      pickedIndex <= REACTION_EMOJIS.length
+        ? REACTION_EMOJIS[pickedIndex - 1]
+        : reaction;
+
+    const emoji = normalizeMessagePayload(fromIndex);
     if (!emoji) return;
 
     const command = buildCommand('react', messageId, emoji);
@@ -644,7 +752,9 @@
     const messageId = ensureMessageId(context);
     if (!messageId) return;
 
-    const defaultText = readString(context?.messageText);
+    const defaultText = readString(
+      context?.messageText || state.lastContext?.messageText || ''
+    );
     const editedText = window.prompt('Digite o novo texto da mensagem:', defaultText);
     if (editedText == null) return;
 
