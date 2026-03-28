@@ -94,14 +94,103 @@
       .trim();
   }
 
+  function getMenuTriggerFromTarget(target) {
+    if (!(target instanceof Element)) return null;
+    return (
+      target.closest(
+        "[id^='message-menu-btn-'], [data-testid='MESSAGE_DETAILS'], [aria-label*='Menu de mensagens'], [aria-label*='message']"
+      ) || target
+    );
+  }
+
+  function extractMessageIdFromMenuButton(menuButton) {
+    if (!(menuButton instanceof Element)) return '';
+
+    const idMatch = readString(menuButton.id).match(/^message-menu-btn-([A-Za-z0-9_-]{8,80})$/i);
+    if (idMatch) return readString(idMatch[1]);
+
+    for (const attrName of ['data-message-id', 'message-id', 'data-msg-id']) {
+      const value = readString(menuButton.getAttribute(attrName));
+      if (value) return value;
+    }
+
+    return '';
+  }
+
+  function escapeCssValue(value) {
+    const raw = readString(value);
+    if (!raw) return '';
+
+    if (window.CSS && typeof window.CSS.escape === 'function') {
+      return window.CSS.escape(raw);
+    }
+
+    return raw.replace(/([^\w-])/g, '\\$1');
+  }
+
+  function findMessageItemById(messageId) {
+    const id = readString(messageId);
+    if (!id) return null;
+
+    const escaped = escapeCssValue(id);
+    if (!escaped) return null;
+
+    return document.querySelector(`.message-item[data-message-id="${escaped}"]`);
+  }
+
+  function extractMessageTextFromMessageItem(messageItem) {
+    if (!(messageItem instanceof Element)) return '';
+
+    const preferred = Array.from(
+      messageItem.querySelectorAll(
+        ".chat-bubble-outbound .chat-message [class*='text-[14px]'][class*='font-inter'][class*='text-gray-900']"
+      )
+    );
+    for (const node of preferred) {
+      const text = normalizeWhitespace(node.innerText || node.textContent);
+      if (shouldIgnoreTextCandidate(text)) continue;
+      if (isLikelyTimestampText(text)) continue;
+      return text;
+    }
+
+    const fallback = Array.from(messageItem.querySelectorAll('.chat-bubble-outbound .chat-message'));
+    for (const node of fallback) {
+      const text = normalizeWhitespace(node.innerText || node.textContent);
+      if (shouldIgnoreTextCandidate(text)) continue;
+      if (isLikelyTimestampText(text)) continue;
+      return text;
+    }
+
+    return '';
+  }
+
+  function resolveContextFromMenuButton(menuButton) {
+    if (!(menuButton instanceof Element)) return null;
+
+    const directId = extractMessageIdFromMenuButton(menuButton);
+    let messageItem = menuButton.closest('.message-item');
+    if (!(messageItem instanceof Element) && directId) {
+      messageItem = findMessageItemById(directId);
+    }
+
+    const itemId = readString(messageItem?.getAttribute('data-message-id'));
+    const messageId = readString(directId || itemId);
+    const messageText = extractMessageTextFromMessageItem(messageItem);
+
+    if (!messageId && !messageText) return null;
+
+    return {
+      messageId,
+      messageText,
+      resolvedAt: Date.now()
+    };
+  }
+
   function isLikelyMenuTrigger(target) {
     if (!(target instanceof Element)) return false;
     if (target.closest(`#${DETAILS_ACTION_ID}`)) return false;
 
-    const clickable =
-      target.closest(
-        "button, [role='button'], [aria-haspopup='menu'], [id*='message'][id*='action'], [id*='menu'], [class*='menu'], [class*='dropdown']"
-      ) || target;
+    const clickable = getMenuTriggerFromTarget(target);
 
     if (!(clickable instanceof Element)) return false;
 
@@ -142,9 +231,15 @@
     state.lastPointerTarget = event.target;
     state.lastPointerAt = Date.now();
 
-    if (isLikelyMenuTrigger(event.target)) {
-      state.lastLikelyMenuTrigger = event.target;
+    const trigger = getMenuTriggerFromTarget(event.target);
+    if (isLikelyMenuTrigger(trigger || event.target)) {
+      state.lastLikelyMenuTrigger = trigger || event.target;
       state.lastLikelyMenuTriggerAt = state.lastPointerAt;
+
+      const directContext = resolveContextFromMenuButton(state.lastLikelyMenuTrigger);
+      if (directContext && directContext.messageId) {
+        state.lastContext = directContext;
+      }
     }
   }
 
@@ -362,6 +457,7 @@
   function resolveMessageContext(detailsAction) {
     const now = Date.now();
     const startNodes = [];
+    let directContext = null;
 
     if (detailsAction instanceof Element) {
       startNodes.push(detailsAction);
@@ -373,6 +469,7 @@
       now - state.lastLikelyMenuTriggerAt <= CONTEXT_TTL_MS
     ) {
       startNodes.push(state.lastLikelyMenuTrigger);
+      directContext = resolveContextFromMenuButton(state.lastLikelyMenuTrigger);
     }
 
     if (
@@ -399,8 +496,22 @@
       collectCandidatesFromAncestors(sources[i], candidateMap, 24 - i * 2);
     }
 
-    const messageId = pickBestCandidateId(candidateMap);
-    const messageText = messageContainers.length ? extractMessageText(messageContainers[0]) : '';
+    const heuristicMessageId = pickBestCandidateId(candidateMap);
+    const directMessageId = readString(directContext?.messageId);
+    const messageId = readString(
+      directMessageId || heuristicMessageId || state.lastContext?.messageId
+    );
+
+    let messageText = readString(directContext?.messageText);
+    if (!messageText && messageId) {
+      messageText = extractMessageTextFromMessageItem(findMessageItemById(messageId));
+    }
+    if (!messageText && messageContainers.length) {
+      messageText = extractMessageText(messageContainers[0]);
+    }
+    if (!messageText) {
+      messageText = readString(state.lastContext?.messageText);
+    }
 
     const context = {
       messageId,
@@ -428,6 +539,8 @@
   function ensureMessageId(context) {
     const fromContext = normalizeManualMessageId(context?.messageId);
     if (fromContext) return fromContext;
+    const fromState = normalizeManualMessageId(state.lastContext?.messageId);
+    if (fromState) return fromState;
 
     const fallback = window.prompt(
       'Nao consegui identificar automaticamente o ID da mensagem. Cole o ID:',
