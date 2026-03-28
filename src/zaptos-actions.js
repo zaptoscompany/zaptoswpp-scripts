@@ -554,6 +554,7 @@
     const explicitComposerTextarea = document.getElementById(
       'conv-composer-textarea-input'
     );
+    const explicitComposerInput = document.querySelector("input[id^='composer-input-']");
 
     const isMessagePlaceholder = (value) => {
       const normalized = readString(value).toLowerCase();
@@ -565,11 +566,22 @@
       if (!input) return false;
       if (!isVisibleElement(input)) return false;
       if (input.id === 'conv-composer-textarea-input') return true;
+      if (input instanceof HTMLInputElement && input.id.startsWith('composer-input-')) {
+        return true;
+      }
 
       if (input instanceof HTMLTextAreaElement) {
         const placeholderOk =
           isMessagePlaceholder(input.getAttribute('placeholder')) ||
           isMessagePlaceholder(input.getAttribute('aria-label'));
+        if (!placeholderOk) return false;
+      }
+
+      if (input instanceof HTMLInputElement) {
+        const placeholderOk =
+          isMessagePlaceholder(input.getAttribute('placeholder')) ||
+          isMessagePlaceholder(input.getAttribute('aria-label')) ||
+          isMessagePlaceholder(input.value);
         if (!placeholderOk) return false;
       }
 
@@ -609,6 +621,18 @@
       )
     ).filter((el) => isVisibleElement(el) && isComposerMessageInput(el));
 
+    const inputCandidates = Array.from(
+      scope.querySelectorAll(
+        "input[id^='composer-input-'], input[placeholder*='mensagem'], input[placeholder*='message'], input[type='text']"
+      )
+    ).filter(
+      (el) =>
+        isVisibleElement(el) &&
+        !el.disabled &&
+        !el.readOnly &&
+        isComposerMessageInput(el)
+    );
+
     const explicitCandidates =
       explicitComposerTextarea instanceof HTMLTextAreaElement &&
       isVisibleElement(explicitComposerTextarea) &&
@@ -617,7 +641,21 @@
         ? [explicitComposerTextarea]
         : [];
 
-    return [...explicitCandidates, ...textareaCandidates, ...editableCandidates];
+    const explicitInputCandidates =
+      explicitComposerInput instanceof HTMLInputElement &&
+      isVisibleElement(explicitComposerInput) &&
+      !explicitComposerInput.disabled &&
+      !explicitComposerInput.readOnly
+        ? [explicitComposerInput]
+        : [];
+
+    return [
+      ...explicitCandidates,
+      ...explicitInputCandidates,
+      ...textareaCandidates,
+      ...inputCandidates,
+      ...editableCandidates
+    ];
   }
 
   function pickMostLikelyInput(candidates) {
@@ -656,6 +694,17 @@
       }
     }
 
+    if (active instanceof HTMLInputElement) {
+      if (
+        isVisibleElement(active) &&
+        !active.disabled &&
+        !active.readOnly &&
+        candidates.includes(active)
+      ) {
+        return active;
+      }
+    }
+
     if (active instanceof HTMLElement) {
       const editable = active.closest("div[contenteditable='true']");
       if (editable && isVisibleElement(editable) && candidates.includes(editable)) {
@@ -678,13 +727,64 @@
     return pickMostLikelyInput(getInputCandidates(document));
   }
 
+  function isComposerLauncherInput(input) {
+    return (
+      input instanceof HTMLInputElement &&
+      readString(input.id).toLowerCase().startsWith('composer-input-')
+    );
+  }
+
+  function findExpandedComposerInput() {
+    const explicit = document.getElementById('conv-composer-textarea-input');
+    if (
+      explicit instanceof HTMLTextAreaElement &&
+      isVisibleElement(explicit) &&
+      !explicit.disabled &&
+      !explicit.readOnly
+    ) {
+      return explicit;
+    }
+
+    const editable = Array.from(
+      document.querySelectorAll(
+        "div[contenteditable='true'][role='textbox'], div[contenteditable='true']"
+      )
+    ).find((el) => isVisibleElement(el));
+    if (editable) return editable;
+
+    const textarea = Array.from(
+      document.querySelectorAll(
+        "textarea[placeholder*='mensagem'], textarea[placeholder*='message'], textarea"
+      )
+    ).find((el) => isVisibleElement(el) && !el.disabled && !el.readOnly);
+    if (textarea) return textarea;
+
+    const textInput = Array.from(
+      document.querySelectorAll(
+        "input[placeholder*='mensagem'], input[placeholder*='message'], input[type='text']"
+      )
+    ).find(
+      (el) =>
+        isVisibleElement(el) &&
+        !el.disabled &&
+        !el.readOnly &&
+        !isComposerLauncherInput(el)
+    );
+    if (textInput) return textInput;
+
+    return null;
+  }
+
   function resolveComposerInput() {
+    const expanded = findExpandedComposerInput();
+    if (expanded) return expanded;
     return findComposerInput();
   }
 
   function getInputText(input) {
     if (!input) return '';
     if (input instanceof HTMLTextAreaElement) return String(input.value || '');
+    if (input instanceof HTMLInputElement) return String(input.value || '');
     if (input instanceof HTMLElement) return String(input.innerText || input.textContent || '');
     return '';
   }
@@ -699,6 +799,14 @@
 
     if (input instanceof HTMLTextAreaElement) {
       if (input.value === value) return;
+      input.value = value;
+      dispatchInputEvents(input);
+      return;
+    }
+
+    if (input instanceof HTMLInputElement) {
+      if (input.value === value) return;
+      input.focus();
       input.value = value;
       dispatchInputEvents(input);
       return;
@@ -784,30 +892,77 @@
   }
 
   function writeAndSendCommand(command) {
+    const fillComposer = (composer, autoSend) => {
+      if (!composer) return false;
+
+      const currentValue = normalizeWhitespace(getInputText(composer));
+      if (currentValue && currentValue !== normalizeWhitespace(command)) {
+        const confirmed = window.confirm(
+          'Ja existe texto no composer. Deseja substituir esse texto pelo comando da acao?'
+        );
+        if (!confirmed) return false;
+      }
+
+      setInputText(composer, command);
+      composer.focus();
+
+      if (!autoSend) {
+        return true;
+      }
+
+      const sendButton = findSendButtonNearInput(composer);
+      if (sendButton instanceof HTMLElement) {
+        sendButton.click();
+        return true;
+      }
+
+      alert('Comando pronto no campo. Clique em enviar para concluir.');
+      return true;
+    };
+
     const composer = resolveComposerInput();
     if (!composer) {
       alert('Nao encontrei o campo de mensagem para enviar o comando.');
       return false;
     }
 
-    const currentValue = normalizeWhitespace(getInputText(composer));
-    if (currentValue && currentValue !== normalizeWhitespace(command)) {
-      const confirmed = window.confirm(
-        'Ja existe texto no composer. Deseja substituir esse texto pelo comando da acao?'
-      );
-      if (!confirmed) return false;
-    }
+    if (isComposerLauncherInput(composer)) {
+      try {
+        composer.focus();
+        composer.dispatchEvent(
+          new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window })
+        );
+        composer.dispatchEvent(
+          new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window })
+        );
+        composer.click();
+      } catch {
+        /* ignore open composer failure */
+      }
 
-    setInputText(composer, command);
+      const maxAttempts = 25;
+      let attempts = 0;
+      const tryFillExpanded = () => {
+        attempts += 1;
+        const expanded = findExpandedComposerInput();
+        if (expanded && !isComposerLauncherInput(expanded)) {
+          const ok = fillComposer(expanded, false);
+          if (!ok) return;
+          alert('Comando inserido. Clique em enviar para concluir.');
+          return;
+        }
+        if (attempts < maxAttempts) {
+          setTimeout(tryFillExpanded, 120);
+          return;
+        }
+        alert('Nao foi possivel abrir o campo de mensagem para inserir o comando.');
+      };
 
-    const sendButton = findSendButtonNearInput(composer);
-    if (sendButton instanceof HTMLElement) {
-      sendButton.click();
+      setTimeout(tryFillExpanded, 80);
       return true;
     }
 
-    alert('Comando pronto no campo. Clique em enviar para concluir.');
-    return true;
+    return fillComposer(composer, true);
   }
 
   function buildCommand(type, messageId, payload) {
