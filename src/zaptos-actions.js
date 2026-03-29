@@ -14,6 +14,8 @@
   const CONTEXT_TTL_MS = 5000;
   const MENU_MARKER_ATTR = 'data-zaptos-actions-injected';
   const ACTION_ITEM_SELECTOR = '[data-zaptos-action-item]';
+  const UI_STYLE_ID = 'zaptos-actions-ui-style';
+  const TOAST_HOST_ID = 'zaptos-actions-toast-host';
 
   const state = {
     lastPointerTarget: null,
@@ -22,6 +24,9 @@
     lastLikelyMenuTriggerAt: 0,
     lastContext: null,
     lastHref: location.href
+  };
+  const uiState = {
+    styleReady: false
   };
 
   const menuContextCache = new WeakMap();
@@ -92,6 +97,444 @@
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n')
       .trim();
+  }
+
+  function ensureUiStyles() {
+    if (uiState.styleReady) return;
+    if (document.getElementById(UI_STYLE_ID)) {
+      uiState.styleReady = true;
+      return;
+    }
+
+    const style = document.createElement('style');
+    style.id = UI_STYLE_ID;
+    style.textContent = `
+      .za-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        background: rgba(15, 23, 42, 0.42);
+        backdrop-filter: blur(2px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+      }
+      .za-modal {
+        width: min(460px, calc(100vw - 24px));
+        max-height: min(85vh, 720px);
+        overflow: auto;
+        border-radius: 14px;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.28);
+        color: #0f172a;
+        font-family: Inter, "Segoe UI", Tahoma, sans-serif;
+      }
+      .za-modal-header {
+        padding: 14px 16px 8px 16px;
+      }
+      .za-modal-title {
+        margin: 0;
+        font-size: 16px;
+        line-height: 1.25;
+        font-weight: 700;
+        color: #0f172a;
+      }
+      .za-modal-subtitle {
+        margin: 8px 0 0 0;
+        font-size: 13px;
+        line-height: 1.45;
+        color: #475569;
+        white-space: pre-wrap;
+      }
+      .za-modal-body {
+        padding: 6px 16px 0 16px;
+      }
+      .za-label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 12px;
+        color: #334155;
+        font-weight: 600;
+      }
+      .za-input, .za-textarea {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #cbd5e1;
+        padding: 10px 12px;
+        font-size: 14px;
+        color: #0f172a;
+        background: #f8fafc;
+        outline: none;
+      }
+      .za-input:focus, .za-textarea:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+        background: #ffffff;
+      }
+      .za-textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+      .za-emoji-grid {
+        display: grid;
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+        gap: 8px;
+        margin: 6px 0 12px 0;
+      }
+      .za-emoji-btn {
+        border: 1px solid #dbe2ef;
+        border-radius: 10px;
+        height: 38px;
+        background: #f8fafc;
+        cursor: pointer;
+        font-size: 20px;
+        line-height: 1;
+      }
+      .za-emoji-btn:hover {
+        border-color: #93c5fd;
+        background: #eff6ff;
+      }
+      .za-modal-footer {
+        padding: 14px 16px 16px 16px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .za-btn {
+        border-radius: 10px;
+        border: 1px solid #cbd5e1;
+        min-height: 36px;
+        padding: 0 14px;
+        font-size: 13px;
+        font-weight: 600;
+        background: #ffffff;
+        color: #334155;
+        cursor: pointer;
+      }
+      .za-btn:hover {
+        background: #f8fafc;
+      }
+      .za-btn.primary {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #ffffff;
+      }
+      .za-btn.primary:hover {
+        border-color: #1d4ed8;
+        background: #1d4ed8;
+      }
+      .za-btn.danger {
+        border-color: #dc2626;
+        background: #dc2626;
+        color: #ffffff;
+      }
+      .za-btn.danger:hover {
+        border-color: #b91c1c;
+        background: #b91c1c;
+      }
+      .za-toast-host {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 2147483001;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-width: min(92vw, 360px);
+      }
+      .za-toast {
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        line-height: 1.35;
+        color: #0f172a;
+        border: 1px solid #dbe2ef;
+        background: #ffffff;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+        transform: translateY(6px);
+        opacity: 0;
+        transition: all 0.16s ease;
+      }
+      .za-toast.show {
+        transform: translateY(0);
+        opacity: 1;
+      }
+      .za-toast.error {
+        border-color: #fecaca;
+        background: #fef2f2;
+        color: #991b1b;
+      }
+      .za-toast.success {
+        border-color: #bbf7d0;
+        background: #f0fdf4;
+        color: #166534;
+      }
+    `;
+    document.head.appendChild(style);
+    uiState.styleReady = true;
+  }
+
+  function getToastHost() {
+    ensureUiStyles();
+    let host = document.getElementById(TOAST_HOST_ID);
+    if (host) return host;
+    host = document.createElement('div');
+    host.id = TOAST_HOST_ID;
+    host.className = 'za-toast-host';
+    document.body.appendChild(host);
+    return host;
+  }
+
+  function showToast(message, type, durationMs) {
+    const text = readString(message);
+    if (!text) return;
+    const host = getToastHost();
+    const toast = document.createElement('div');
+    toast.className = `za-toast ${readString(type)}`;
+    toast.textContent = text;
+    host.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+
+    const lifetime = Number(durationMs) > 0 ? Number(durationMs) : 2300;
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 180);
+    }, lifetime);
+  }
+
+  function createDialogFrame(title, subtitle) {
+    ensureUiStyles();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'za-overlay';
+
+    const card = document.createElement('div');
+    card.className = 'za-modal';
+    overlay.appendChild(card);
+
+    const header = document.createElement('div');
+    header.className = 'za-modal-header';
+    card.appendChild(header);
+
+    const titleEl = document.createElement('h3');
+    titleEl.className = 'za-modal-title';
+    titleEl.textContent = readString(title) || 'Acoes da mensagem';
+    header.appendChild(titleEl);
+
+    if (readString(subtitle)) {
+      const subtitleEl = document.createElement('p');
+      subtitleEl.className = 'za-modal-subtitle';
+      subtitleEl.textContent = readString(subtitle);
+      header.appendChild(subtitleEl);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'za-modal-body';
+    card.appendChild(body);
+
+    const footer = document.createElement('div');
+    footer.className = 'za-modal-footer';
+    card.appendChild(footer);
+
+    return { overlay, card, body, footer };
+  }
+
+  function showModernConfirm({ title, message, confirmText, cancelText, danger }) {
+    return new Promise((resolve) => {
+      const frame = createDialogFrame(title || 'Confirmacao', message || '');
+      const overlay = frame.overlay;
+      const footer = frame.footer;
+
+      const cleanup = (result) => {
+        document.removeEventListener('keydown', onKeydown, true);
+        overlay.remove();
+        resolve(!!result);
+      };
+
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cleanup(false);
+        }
+      };
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'za-btn';
+      cancelBtn.textContent = readString(cancelText) || 'Cancelar';
+      cancelBtn.addEventListener('click', () => cleanup(false));
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = `za-btn ${danger ? 'danger' : 'primary'}`;
+      confirmBtn.textContent = readString(confirmText) || 'Confirmar';
+      confirmBtn.addEventListener('click', () => cleanup(true));
+
+      overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) cleanup(false);
+      });
+
+      footer.append(cancelBtn, confirmBtn);
+      document.body.appendChild(overlay);
+      document.addEventListener('keydown', onKeydown, true);
+      confirmBtn.focus();
+    });
+  }
+
+  function showModernPrompt({
+    title,
+    subtitle,
+    label,
+    defaultValue,
+    placeholder,
+    multiline,
+    confirmText,
+    cancelText
+  }) {
+    return new Promise((resolve) => {
+      const frame = createDialogFrame(title || 'Informacao', subtitle || '');
+      const overlay = frame.overlay;
+      const body = frame.body;
+      const footer = frame.footer;
+      const useMultiline = multiline === true;
+
+      const labelEl = document.createElement('label');
+      labelEl.className = 'za-label';
+      labelEl.textContent = readString(label) || '';
+      body.appendChild(labelEl);
+
+      const field = useMultiline
+        ? document.createElement('textarea')
+        : document.createElement('input');
+      field.className = useMultiline ? 'za-textarea' : 'za-input';
+      if (!useMultiline) field.type = 'text';
+      field.placeholder = readString(placeholder);
+      field.value = String(defaultValue == null ? '' : defaultValue);
+      body.appendChild(field);
+
+      const cleanup = (result) => {
+        document.removeEventListener('keydown', onKeydown, true);
+        overlay.remove();
+        resolve(result);
+      };
+
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cleanup(null);
+          return;
+        }
+        if (!useMultiline && event.key === 'Enter') {
+          event.preventDefault();
+          cleanup(field.value);
+          return;
+        }
+        if (useMultiline && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          cleanup(field.value);
+        }
+      };
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'za-btn';
+      cancelBtn.textContent = readString(cancelText) || 'Cancelar';
+      cancelBtn.addEventListener('click', () => cleanup(null));
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'za-btn primary';
+      confirmBtn.textContent = readString(confirmText) || 'Salvar';
+      confirmBtn.addEventListener('click', () => cleanup(field.value));
+
+      overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) cleanup(null);
+      });
+
+      footer.append(cancelBtn, confirmBtn);
+      document.body.appendChild(overlay);
+      document.addEventListener('keydown', onKeydown, true);
+      field.focus();
+      if (!useMultiline) field.select();
+    });
+  }
+
+  function showEmojiPickerDialog(options) {
+    return new Promise((resolve) => {
+      const frame = createDialogFrame(
+        'Reagir a mensagem',
+        'Escolha um emoji abaixo ou digite um emoji personalizado.'
+      );
+      const overlay = frame.overlay;
+      const body = frame.body;
+      const footer = frame.footer;
+      const emojis = Array.isArray(options) ? options : [];
+
+      const grid = document.createElement('div');
+      grid.className = 'za-emoji-grid';
+      body.appendChild(grid);
+
+      const customLabel = document.createElement('label');
+      customLabel.className = 'za-label';
+      customLabel.textContent = 'Emoji personalizado';
+      body.appendChild(customLabel);
+
+      const customInput = document.createElement('input');
+      customInput.type = 'text';
+      customInput.className = 'za-input';
+      customInput.placeholder = 'Ex.: 👍';
+      body.appendChild(customInput);
+
+      const cleanup = (result) => {
+        document.removeEventListener('keydown', onKeydown, true);
+        overlay.remove();
+        resolve(result);
+      };
+
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cleanup(null);
+          return;
+        }
+        if (event.key === 'Enter' && document.activeElement === customInput) {
+          event.preventDefault();
+          cleanup(customInput.value);
+        }
+      };
+
+      emojis.forEach((emoji) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'za-emoji-btn';
+        btn.textContent = emoji;
+        btn.addEventListener('click', () => cleanup(emoji));
+        grid.appendChild(btn);
+      });
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'za-btn';
+      cancelBtn.textContent = 'Cancelar';
+      cancelBtn.addEventListener('click', () => cleanup(null));
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'za-btn primary';
+      confirmBtn.textContent = 'Usar emoji';
+      confirmBtn.addEventListener('click', () => cleanup(customInput.value));
+
+      overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) cleanup(null);
+      });
+
+      footer.append(cancelBtn, confirmBtn);
+      document.body.appendChild(overlay);
+      document.addEventListener('keydown', onKeydown, true);
+      customInput.focus();
+    });
   }
 
   function getMenuTriggerFromTarget(target) {
@@ -536,16 +979,22 @@
     return readString(token);
   }
 
-  function ensureMessageId(context) {
+  async function ensureMessageId(context) {
     const fromContext = normalizeManualMessageId(context?.messageId);
     if (fromContext) return fromContext;
     const fromState = normalizeManualMessageId(state.lastContext?.messageId);
     if (fromState) return fromState;
 
-    const fallback = window.prompt(
-      'Nao consegui identificar automaticamente o ID da mensagem. Cole o ID:',
-      ''
-    );
+    const fallback = await showModernPrompt({
+      title: 'ID da mensagem',
+      subtitle: 'Nao foi possivel identificar o ID automaticamente.',
+      label: 'Cole o ID da mensagem',
+      defaultValue: '',
+      placeholder: 'Ex.: MaDgdiZapbRW90TKFbYZ',
+      multiline: false,
+      confirmText: 'Continuar',
+      cancelText: 'Cancelar'
+    });
     return normalizeManualMessageId(fallback);
   }
 
@@ -891,15 +1340,18 @@
     return findSendButtonInScope(document);
   }
 
-  function writeAndSendCommand(command) {
-    const fillComposer = (composer, autoSend) => {
+  async function writeAndSendCommand(command) {
+    const fillComposer = async (composer, autoSend) => {
       if (!composer) return false;
 
       const currentValue = normalizeWhitespace(getInputText(composer));
       if (currentValue && currentValue !== normalizeWhitespace(command)) {
-        const confirmed = window.confirm(
-          'Ja existe texto no composer. Deseja substituir esse texto pelo comando da acao?'
-        );
+        const confirmed = await showModernConfirm({
+          title: 'Substituir texto atual?',
+          message: 'Ja existe texto no composer. Deseja substituir pelo comando da acao?',
+          confirmText: 'Substituir',
+          cancelText: 'Manter'
+        });
         if (!confirmed) return false;
       }
 
@@ -916,13 +1368,13 @@
         return true;
       }
 
-      alert('Comando pronto no campo. Clique em enviar para concluir.');
+      showToast('Comando pronto no campo. Clique em enviar para concluir.');
       return true;
     };
 
     const composer = resolveComposerInput();
     if (!composer) {
-      alert('Nao encontrei o campo de mensagem para enviar o comando.');
+      showToast('Nao encontrei o campo de mensagem para inserir o comando.', 'error', 3000);
       return false;
     }
 
@@ -946,23 +1398,21 @@
         attempts += 1;
         const expanded = findExpandedComposerInput();
         if (expanded && !isComposerLauncherInput(expanded)) {
-          const ok = fillComposer(expanded, false);
-          if (!ok) return;
-          alert('Comando inserido. Clique em enviar para concluir.');
+          void fillComposer(expanded, false);
           return;
         }
         if (attempts < maxAttempts) {
           setTimeout(tryFillExpanded, 120);
           return;
         }
-        alert('Nao foi possivel abrir o campo de mensagem para inserir o comando.');
+        showToast('Nao foi possivel abrir o campo de mensagem para inserir o comando.', 'error', 3200);
       };
 
       setTimeout(tryFillExpanded, 80);
       return true;
     }
 
-    return fillComposer(composer, true);
+    return await fillComposer(composer, true);
   }
 
   function buildCommand(type, messageId, payload) {
@@ -977,64 +1427,67 @@
     return '';
   }
 
-  function runDeleteAction(context) {
-    const messageId = ensureMessageId(context);
+  async function runDeleteAction(context) {
+    const messageId = await ensureMessageId(context);
     if (!messageId) return;
 
-    const confirmed = window.confirm(`Confirmar apagar mensagem (${messageId})?`);
+    const confirmed = await showModernConfirm({
+      title: 'Apagar mensagem',
+      message: `Confirmar apagar mensagem (${messageId})?`,
+      confirmText: 'Apagar',
+      cancelText: 'Cancelar',
+      danger: true
+    });
     if (!confirmed) return;
 
     const command = buildCommand('delete', messageId);
     if (!command) return;
-    writeAndSendCommand(command);
+    await writeAndSendCommand(command);
   }
 
-  function runReactAction(context) {
-    const messageId = ensureMessageId(context);
+  async function runReactAction(context) {
+    const messageId = await ensureMessageId(context);
     if (!messageId) return;
 
-    const optionsText = REACTION_EMOJIS.map((emoji, idx) => `${idx + 1}=${emoji}`).join('  ');
-    const reaction = window.prompt(
-      `Escolha uma reacao (${optionsText})\nDigite o numero ou o emoji:`,
-      REACTION_EMOJIS[0]
-    );
+    const reaction = await showEmojiPickerDialog(REACTION_EMOJIS);
     if (reaction == null) return;
 
-    const pickedIndex = Number(reaction);
-    const fromIndex =
-      Number.isInteger(pickedIndex) &&
-      pickedIndex >= 1 &&
-      pickedIndex <= REACTION_EMOJIS.length
-        ? REACTION_EMOJIS[pickedIndex - 1]
-        : reaction;
-
-    const emoji = normalizeMessagePayload(fromIndex);
+    const emoji = normalizeMessagePayload(reaction);
     if (!emoji) return;
 
     const command = buildCommand('react', messageId, emoji);
     if (!command) return;
-    writeAndSendCommand(command);
+    await writeAndSendCommand(command);
   }
 
-  function runEditAction(context) {
-    const messageId = ensureMessageId(context);
+  async function runEditAction(context) {
+    const messageId = await ensureMessageId(context);
     if (!messageId) return;
 
     const defaultText = readString(
       context?.messageText || state.lastContext?.messageText || ''
     );
-    const editedText = window.prompt('Digite o novo texto da mensagem:', defaultText);
+    const editedText = await showModernPrompt({
+      title: 'Editar mensagem',
+      subtitle: `ID: ${messageId}`,
+      label: 'Digite o novo texto da mensagem',
+      defaultValue: defaultText,
+      placeholder: 'Novo texto...',
+      multiline: true,
+      confirmText: 'Aplicar',
+      cancelText: 'Cancelar'
+    });
     if (editedText == null) return;
 
     const payload = normalizeMessagePayload(editedText);
     if (!payload) {
-      alert('Texto vazio. Edicao cancelada.');
+      showToast('Texto vazio. Edicao cancelada.', 'error', 2600);
       return;
     }
 
     const command = buildCommand('edit', messageId, payload);
     if (!command) return;
-    writeAndSendCommand(command);
+    await writeAndSendCommand(command);
   }
 
   function createMenuItemIcon(pathD, color) {
@@ -1104,18 +1557,17 @@
   }
 
   function bindActionClick(item, handler, menuRoot, detailsAction) {
-    item.addEventListener('click', (event) => {
+    item.addEventListener('click', async (event) => {
       event.preventDefault();
       event.stopPropagation();
 
       try {
         const context = getOrResolveMenuContext(menuRoot, detailsAction);
-        handler(context);
+        closeContextMenu();
+        await handler(context);
       } catch (error) {
         log('Erro ao executar acao', error);
-        alert('Falha ao executar a acao da mensagem.');
-      } finally {
-        closeContextMenu();
+        showToast('Falha ao executar a acao da mensagem.', 'error', 3000);
       }
     });
   }
