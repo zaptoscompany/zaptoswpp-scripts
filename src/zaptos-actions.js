@@ -1,5 +1,5 @@
 /*!
- * Zaptos Message Actions for GHL
+ * Message Actions Script
  * Injeta opcoes de acao no menu de mensagem.
  */
 (function () {
@@ -40,6 +40,14 @@
     window.__ZAPTOS_ACTIONS_COMMANDS__ || {}
   );
   const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '👏', '🔥'];
+  const RESTRICTED_BRAND_PATTERNS = [
+    /\bgo\s*[-_]?\s*high\s*[-_]?\s*level\b/gi,
+    /\bgohighlevel\b/gi,
+    /\bghl\b/gi,
+    /\bzaptos[a-z0-9_-]*\b/gi,
+    /\buazapi[a-z0-9_-]*\b/gi,
+    /\bwavoip[a-z0-9_-]*\b/gi
+  ];
 
   const TOKEN_REGEX = /\b[A-Za-z0-9][A-Za-z0-9_-]{7,80}\b/g;
   const STOP_TOKENS = new Set([
@@ -76,7 +84,7 @@
   ]);
 
   const log = (...args) => {
-    if (DEBUG) console.log('[ZaptosActions]', ...args);
+    if (DEBUG) console.log('[PlatformActions]', ...args);
   };
 
   function readString(value) {
@@ -97,6 +105,14 @@
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n')
       .trim();
+  }
+
+  function sanitizeRestrictedTerms(text) {
+    let output = String(text == null ? '' : text);
+    for (const pattern of RESTRICTED_BRAND_PATTERNS) {
+      output = output.replace(pattern, 'plataforma');
+    }
+    return output;
   }
 
   function ensureUiStyles() {
@@ -1464,8 +1480,8 @@
     const messageId = await ensureMessageId(context);
     if (!messageId) return;
 
-    const defaultText = readString(
-      context?.messageText || state.lastContext?.messageText || ''
+    const defaultText = sanitizeRestrictedTerms(
+      readString(context?.messageText || state.lastContext?.messageText || '')
     );
     const editedText = await showModernPrompt({
       title: 'Editar mensagem',
@@ -1479,7 +1495,7 @@
     });
     if (editedText == null) return;
 
-    const payload = normalizeMessagePayload(editedText);
+    const payload = sanitizeRestrictedTerms(normalizeMessagePayload(editedText));
     if (!payload) {
       showToast('Texto vazio. Edicao cancelada.', 'error', 2600);
       return;
