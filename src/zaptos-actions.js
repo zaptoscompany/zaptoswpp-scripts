@@ -40,14 +40,6 @@
     window.__ZAPTOS_ACTIONS_COMMANDS__ || {}
   );
   const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '👏', '🔥'];
-  const RESTRICTED_BRAND_PATTERNS = [
-    /\bgo\s*[-_]?\s*high\s*[-_]?\s*level\b/gi,
-    /\bgohighlevel\b/gi,
-    /\bghl\b/gi,
-    /\bzaptos[a-z0-9_-]*\b/gi,
-    /\buazapi[a-z0-9_-]*\b/gi,
-    /\bwavoip[a-z0-9_-]*\b/gi
-  ];
 
   const TOKEN_REGEX = /\b[A-Za-z0-9][A-Za-z0-9_-]{7,80}\b/g;
   const STOP_TOKENS = new Set([
@@ -107,12 +99,18 @@
       .trim();
   }
 
-  function sanitizeRestrictedTerms(text) {
-    let output = String(text == null ? '' : text);
-    for (const pattern of RESTRICTED_BRAND_PATTERNS) {
-      output = output.replace(pattern, 'plataforma');
-    }
-    return output;
+  function normalizeMessageForEdit(text) {
+    return String(text == null ? '' : text)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
+  }
+
+  function stripTrailingInstanceSource(text) {
+    const sourceRemoved = String(text == null ? '' : text).replace(
+      /\n?\s*Instance Source\s*:\s*[^\n\r]*\s*$/i,
+      ''
+    );
+    return normalizeMessageForEdit(sourceRemoved);
   }
 
   function ensureUiStyles() {
@@ -606,7 +604,7 @@
       )
     );
     for (const node of preferred) {
-      const text = normalizeWhitespace(node.innerText || node.textContent);
+      const text = normalizeMessageForEdit(node.innerText || node.textContent);
       if (shouldIgnoreTextCandidate(text)) continue;
       if (isLikelyTimestampText(text)) continue;
       return text;
@@ -614,7 +612,7 @@
 
     const fallback = Array.from(messageItem.querySelectorAll('.chat-bubble-outbound .chat-message'));
     for (const node of fallback) {
-      const text = normalizeWhitespace(node.innerText || node.textContent);
+      const text = normalizeMessageForEdit(node.innerText || node.textContent);
       if (shouldIgnoreTextCandidate(text)) continue;
       if (isLikelyTimestampText(text)) continue;
       return text;
@@ -897,7 +895,7 @@
       if (!(node instanceof HTMLElement)) continue;
       if (!isVisibleElement(node)) continue;
 
-      const text = normalizeWhitespace(node.innerText || node.textContent);
+      const text = normalizeMessageForEdit(node.innerText || node.textContent);
       if (shouldIgnoreTextCandidate(text)) continue;
       if (text.length > 700) continue;
 
@@ -1480,8 +1478,8 @@
     const messageId = await ensureMessageId(context);
     if (!messageId) return;
 
-    const defaultText = sanitizeRestrictedTerms(
-      readString(context?.messageText || state.lastContext?.messageText || '')
+    const defaultText = stripTrailingInstanceSource(
+      context?.messageText || state.lastContext?.messageText || ''
     );
     const editedText = await showModernPrompt({
       title: 'Editar mensagem',
@@ -1495,8 +1493,8 @@
     });
     if (editedText == null) return;
 
-    const payload = sanitizeRestrictedTerms(normalizeMessagePayload(editedText));
-    if (!payload) {
+    const payload = normalizeMessageForEdit(editedText);
+    if (!payload.trim()) {
       showToast('Texto vazio. Edicao cancelada.', 'error', 2600);
       return;
     }
