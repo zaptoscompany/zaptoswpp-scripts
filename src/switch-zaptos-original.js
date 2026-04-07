@@ -147,6 +147,46 @@
   }
 
   function findComposerChannelLabel() {
+    const input = pickMostLikelyInput(getInputCandidates(document));
+    if (input) {
+      const inputRect = input.getBoundingClientRect();
+      const scopedBlocks = Array.from(document.querySelectorAll(CHANNEL_LEFT_BLOCK_SELECTOR))
+        .filter((el) => isVisibleElement(el))
+        .map((leftBlock) => {
+          const label = findChannelLabelInLeftBlock(leftBlock);
+          if (!label) return null;
+
+          const labelText = normalizeLabelText(label.textContent);
+          const rect = leftBlock.getBoundingClientRect();
+          const verticalDelta = Math.abs(rect.bottom - inputRect.top);
+          if (verticalDelta > 380) return null;
+
+          const overlapX = Math.max(
+            0,
+            Math.min(rect.right, inputRect.right) - Math.max(rect.left, inputRect.left)
+          );
+          const overlapRatio =
+            overlapX / Math.max(1, Math.min(rect.width || 1, inputRect.width || 1));
+
+          let score = 0;
+          if (rect.bottom <= inputRect.top + 120) score += 140;
+          if (rect.bottom >= inputRect.top - 280) score += 110;
+          if (rect.top <= inputRect.top + 40) score += 40;
+          score += Math.max(0, 140 - verticalDelta);
+          score += Math.round(overlapRatio * 100);
+          if (labelText === 'sms') score += 80;
+          if (isKnownChannelLabelText(labelText)) score += 40;
+
+          return { label, score };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score);
+
+      if (scopedBlocks.length && scopedBlocks[0].score >= 140) {
+        return scopedBlocks[0].label;
+      }
+    }
+
     const rows = Array.from(document.querySelectorAll(CHANNEL_ROW_SELECTOR))
       .filter((el) => isVisibleElement(el))
       .sort(
