@@ -19,6 +19,10 @@
   const SHOW_STATUS_TEXT = false;
   const FLOATING_HOST_ID = 'zaptos-switch-floating-host';
   const CHANNEL_HEADER_HOST_ID = 'zaptos-switch-channel-host';
+  const CHANNEL_ROW_SELECTOR =
+    "div.flex.flex-row.py-1.items-center.justify-end.rounded-t-lg, div[class*='rounded-t-lg'][class*='py-1'], div[class*='rounded-t-lg'][class*='items-center'][class*='py-1']";
+  const CHANNEL_LEFT_BLOCK_SELECTOR =
+    "div.flex.gap-6.items-center.w-full.min-w-0.overflow-hidden, div.flex.gap-6.items-center.flex-1.min-w-0.overflow-hidden, div[class*='gap-6'][class*='items-center'][class*='min-w-0'][class*='overflow-hidden'][class*='w-full'], div[class*='gap-6'][class*='items-center'][class*='min-w-0'][class*='overflow-hidden'][class*='flex-1']";
   const CHECK_INTERVAL_MS = 1200;
   const REQUEST_TIMEOUT_MS = 12000;
   const STORAGE_PREFIX = 'zaptos_wpp_switch';
@@ -34,6 +38,7 @@
     'page:',
     'messenger',
     'facebook',
+    'sms',
     'comentario interno',
     'comentário interno',
     'internal comment'
@@ -125,10 +130,24 @@
     return /^[a-z0-9 :\-\u00c0-\u017f]+$/i.test(normalized);
   }
 
+  function findChannelLabelInLeftBlock(leftBlock) {
+    if (!leftBlock) return null;
+
+    const labels = Array.from(
+      leftBlock.querySelectorAll('span.text-sm.font-medium.text-gray-700, span')
+    ).filter((el) => isVisibleElement(el));
+    if (!labels.length) return null;
+
+    const preferred = labels.find((label) =>
+      isKnownChannelLabelText(label.textContent)
+    );
+    if (preferred) return preferred;
+
+    return labels.find((label) => isLikelyChannelLabelText(label.textContent)) || null;
+  }
+
   function findComposerChannelLabel() {
-    const rowSelector =
-      "div.flex.flex-row.py-1.items-center.justify-end.rounded-t-lg, div[class*='rounded-t-lg'][class*='py-1']";
-    const rows = Array.from(document.querySelectorAll(rowSelector))
+    const rows = Array.from(document.querySelectorAll(CHANNEL_ROW_SELECTOR))
       .filter((el) => isVisibleElement(el))
       .sort(
         (a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top
@@ -136,28 +155,27 @@
 
     for (const row of rows) {
       const leftBlock =
+        row.querySelector(CHANNEL_LEFT_BLOCK_SELECTOR) ||
         row.querySelector(
-          "div.flex.gap-6.items-center.w-full.min-w-0.overflow-hidden"
-        ) ||
-        row.querySelector(
-          "div[class*='gap-6'][class*='w-full'][class*='items-center']"
+          "div[class*='gap-6'][class*='items-center'][class*='min-w-0'][class*='overflow-hidden']"
         );
       if (!leftBlock) continue;
 
-      const labels = Array.from(
-        leftBlock.querySelectorAll('span.text-sm.font-medium.text-gray-700, span')
-      ).filter((el) => isVisibleElement(el));
-      if (!labels.length) continue;
+      const label = findChannelLabelInLeftBlock(leftBlock);
+      if (label) return label;
+    }
 
-      const preferred = labels.find((label) =>
-        isKnownChannelLabelText(label.textContent)
+    const fallbackBlocks = Array.from(
+      document.querySelectorAll(CHANNEL_LEFT_BLOCK_SELECTOR)
+    )
+      .filter((el) => isVisibleElement(el))
+      .sort(
+        (a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top
       );
-      if (preferred) return preferred;
 
-      const fallback = labels.find((label) =>
-        isLikelyChannelLabelText(label.textContent)
-      );
-      if (fallback) return fallback;
+    for (const leftBlock of fallbackBlocks) {
+      const label = findChannelLabelInLeftBlock(leftBlock);
+      if (label) return label;
     }
 
     return null;
@@ -167,35 +185,41 @@
     const label = findComposerChannelLabel();
     if (!label) return null;
 
-    const row = label.closest(
-      "div.flex.flex-row.py-1.items-center.justify-end.rounded-t-lg, div[class*='rounded-t-lg'][class*='py-1']"
-    );
-    if (!row) return null;
-
+    const row = label.closest(CHANNEL_ROW_SELECTOR);
     const leftBlock =
-      row.querySelector("div.flex.gap-6.items-center.w-full.min-w-0.overflow-hidden") ||
-      row.querySelector("div[class*='gap-6'][class*='w-full'][class*='items-center']");
+      label.closest(CHANNEL_LEFT_BLOCK_SELECTOR) ||
+      row?.querySelector(CHANNEL_LEFT_BLOCK_SELECTOR) ||
+      row?.querySelector(
+        "div[class*='gap-6'][class*='items-center'][class*='min-w-0'][class*='overflow-hidden']"
+      );
 
     if (!leftBlock) return null;
 
-    let host = row.querySelector(`#${CHANNEL_HEADER_HOST_ID}`);
-    if (host) return host;
-
-    host = document.createElement('div');
-    host.id = CHANNEL_HEADER_HOST_ID;
-    Object.assign(host.style, {
-      display: 'inline-flex',
-      alignItems: 'center',
-      marginLeft: '8px',
-      minWidth: '0',
-      flexShrink: '0'
-    });
+    let host = document.getElementById(CHANNEL_HEADER_HOST_ID);
+    if (!host) {
+      host = document.createElement('div');
+      host.id = CHANNEL_HEADER_HOST_ID;
+      Object.assign(host.style, {
+        display: 'inline-flex',
+        alignItems: 'center',
+        marginLeft: '8px',
+        minWidth: '0',
+        flexShrink: '0'
+      });
+    }
 
     const titleContainer = label.closest('div');
-    if (titleContainer && titleContainer.parentElement === leftBlock) {
-      leftBlock.insertBefore(host, titleContainer.nextSibling);
-    } else {
-      leftBlock.appendChild(host);
+    const shouldBeAfterTitle =
+      titleContainer &&
+      titleContainer.parentElement === leftBlock &&
+      host.previousSibling !== titleContainer;
+
+    if (host.parentElement !== leftBlock || shouldBeAfterTitle) {
+      if (titleContainer && titleContainer.parentElement === leftBlock) {
+        leftBlock.insertBefore(host, titleContainer.nextSibling);
+      } else {
+        leftBlock.appendChild(host);
+      }
     }
 
     return host;
@@ -222,7 +246,34 @@
         "#conv-send-button-simple, [id^='conv-send-button'], button, [role='button'], [data-testid*='send']"
       )
     ).filter((el) => isVisibleElement(el) && !el.closest(`#${WRAPPER_ID}`));
-    return buttons.find((btn) => isLikelySendButton(btn)) || null;
+
+    const candidates = buttons.filter((btn) => isLikelySendButton(btn));
+    if (!candidates.length) return null;
+
+    const scoreButton = (btn) => {
+      const id = readString(btn.id).toLowerCase();
+      const aria = readString(btn.getAttribute('aria-label')).toLowerCase();
+      const title = readString(btn.getAttribute('title')).toLowerCase();
+      const text = readString(btn.textContent).toLowerCase();
+      const dataTestId = readString(btn.getAttribute('data-testid')).toLowerCase();
+      const rect = btn.getBoundingClientRect();
+
+      let score = 0;
+      if (id === 'conv-send-button-simple') score += 1200;
+      if (id.startsWith('conv-send-button')) score += 1000;
+      if (/send|enviar/.test(aria)) score += 300;
+      if (/send|enviar/.test(title)) score += 200;
+      if (/send|enviar/.test(text)) score += 120;
+      if (/send/.test(dataTestId)) score += 100;
+      if (rect.bottom >= window.innerHeight - 240) score += 80;
+      if (rect.right >= window.innerWidth - 280) score += 80;
+      score += Math.round(rect.right / 10);
+      score += Math.round(rect.bottom / 20);
+
+      return score;
+    };
+
+    return [...candidates].sort((a, b) => scoreButton(b) - scoreButton(a))[0] || null;
   }
 
   function findClearButtonInScope(scope) {
@@ -702,7 +753,6 @@
     if (/send|enviar/.test(text)) return true;
     if (/send/.test(dataTestId)) return true;
     if (id.includes('send')) return true;
-    if (className.includes('send')) return true;
 
     return false;
   }
@@ -754,6 +804,12 @@
     }
 
     return null;
+  }
+
+  function isTargetInsideElement(target, element) {
+    if (!(target instanceof Element)) return false;
+    if (!(element instanceof Element)) return false;
+    return target === element || element.contains(target) || target.contains(element);
   }
 
   function isLikelyComposerSendButton(button) {
@@ -816,44 +872,36 @@
     if (target.closest(`#${WRAPPER_ID}`)) return null;
 
     const composer = findComposerContainerFromInput();
+    if (!composer) return null;
+
     const actionBar = findComposerActionBar(composer);
+    const searchScope = actionBar || composer;
+    const canonicalSendButton = findSendButtonInScope(searchScope);
+    if (!canonicalSendButton) return null;
+    if (actionBar && !actionBar.contains(canonicalSendButton)) return null;
 
-    const button = target.closest(
-      "#conv-send-button-simple, [id^='conv-send-button'], button, [role='button'], [data-testid*='send']"
-    );
-    if (button && button.closest(`#${WRAPPER_ID}`)) return null;
-
-    if (button && (isLikelySendButton(button) || isLikelyComposerSendButton(button))) {
-      return button;
+    if (isTargetInsideElement(target, canonicalSendButton)) {
+      return canonicalSendButton;
     }
 
     // Clique direto no SVG/PATH do aviao de envio.
     const svgOrPath = target.closest('svg, path');
-    if (svgOrPath && hasPaperPlanePath(svgOrPath)) {
+    if (
+      svgOrPath &&
+      hasPaperPlanePath(svgOrPath) &&
+      isTargetInsideElement(svgOrPath, canonicalSendButton)
+    ) {
       const interactive = findInteractiveAncestor(svgOrPath, actionBar || composer);
       if (
         interactive &&
-        (!composer || composer.contains(interactive)) &&
+        isTargetInsideElement(interactive, canonicalSendButton) &&
         (isLikelySendButton(interactive) || isLikelyComposerSendButton(interactive))
       ) {
-        return interactive;
+        return canonicalSendButton;
       }
     }
 
-    const candidate =
-      button ||
-      target.closest(
-        "#conv-send-button-simple, [id^='conv-send-button'], [data-testid*='send'], button[aria-label*='send'], button[aria-label*='enviar'], [title*='send'], [title*='enviar'], [class*='send'], [class*='enviar']"
-      );
-
-    if (!candidate || candidate.closest(`#${WRAPPER_ID}`)) return null;
-
-    if (!composer || !composer.contains(candidate)) return null;
-    if (!isLikelySendButton(candidate) && !isLikelyComposerSendButton(candidate)) {
-      return null;
-    }
-    if (actionBar && !actionBar.contains(candidate)) return null;
-    return candidate;
+    return null;
   }
 
   function replaySend(button) {
