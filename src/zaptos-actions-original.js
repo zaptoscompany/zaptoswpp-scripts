@@ -1,6 +1,6 @@
 /*!
- * Message Actions Script
- * Injeta opcoes de acao no menu de mensagem.
+ * Message Actions + Official WABA Templates Script
+ * Injeta opcoes de acao no menu e o seletor de templates oficiais.
  */
 (function () {
   if (window.__ZAPTOS_MESSAGE_ACTIONS_V1__) return;
@@ -16,6 +16,13 @@
   const ACTION_ITEM_SELECTOR = '[data-zaptos-action-item]';
   const UI_STYLE_ID = 'zaptos-actions-ui-style';
   const TOAST_HOST_ID = 'zaptos-actions-toast-host';
+  const TEMPLATE_BUTTON_ID = 'zaptos-waba-template-btn';
+  const TEMPLATE_BUTTON_WRAPPER_ID = 'zaptos-waba-template-wrapper';
+  const TEMPLATE_EDGE_URL =
+    window.__ZAPTOS_WABA_TEMPLATES_EDGE_URL__ ||
+    'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/get-waba-templates';
+  const TEMPLATE_REQUEST_TIMEOUT_MS = 15000;
+  const TEMPLATE_INSTANCE_STORAGE_KEY = 'zaptos_waba_template_instance_by_location';
 
   const state = {
     lastPointerTarget: null,
@@ -27,6 +34,10 @@
   };
   const uiState = {
     styleReady: false
+  };
+  const templateState = {
+    activeClose: null,
+    loading: false
   };
 
   const menuContextCache = new WeakMap();
@@ -146,6 +157,29 @@
         color: #0f172a;
         font-family: Inter, "Segoe UI", Tahoma, sans-serif;
       }
+      .za-template-modal {
+        width: min(860px, calc(100vw - 24px));
+        height: min(84vh, 700px);
+        max-height: calc(100vh - 24px);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .za-template-modal .za-modal-header,
+      .za-template-modal .za-modal-footer {
+        flex: 0 0 auto;
+      }
+      .za-template-modal .za-modal-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .za-template-modal .za-modal-footer {
+        border-top: 1px solid #eef2f6;
+        background: #ffffff;
+      }
       .za-modal-header {
         padding: 14px 16px 8px 16px;
       }
@@ -192,6 +226,254 @@
         min-height: 110px;
         resize: vertical;
       }
+      .za-template-controls {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+      }
+      .za-template-controls > .za-btn {
+        height: 46px;
+        align-self: end;
+      }
+      .za-template-search {
+        margin-top: 10px;
+      }
+      .za-template-status {
+        min-height: 20px;
+        margin-top: 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #64748b;
+      }
+      .za-template-status.error {
+        color: #b91c1c;
+      }
+      .za-template-workspace {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(250px, 0.86fr) minmax(320px, 1.14fr);
+        gap: 12px;
+        overflow: hidden;
+      }
+      .za-template-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 2px 2px 4px 2px;
+      }
+      .za-template-card {
+        flex: 0 0 auto;
+        width: 100%;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 12px;
+        background: #ffffff;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+      }
+      .za-template-card:hover {
+        border-color: #93c5fd;
+        background: #f8fbff;
+      }
+      .za-template-card.selected {
+        border-color: #2563eb;
+        background: #eff6ff;
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+      }
+      .za-template-card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .za-template-name {
+        margin: 0;
+        color: #0f172a;
+        font-size: 13px;
+        line-height: 1.35;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+      .za-template-meta {
+        margin-top: 4px;
+        color: #64748b;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+      .za-template-note {
+        margin: 8px 0 0 0;
+        color: #92400e;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+      .za-template-badge {
+        flex: 0 0 auto;
+        border-radius: 999px;
+        padding: 3px 7px;
+        background: #f1f5f9;
+        color: #475569;
+        font-size: 10px;
+        line-height: 1.2;
+        font-weight: 700;
+      }
+      .za-template-badge.approved {
+        background: #dcfce7;
+        color: #166534;
+      }
+      .za-template-use {
+        width: 100%;
+        margin-top: 12px;
+      }
+      .za-template-empty {
+        flex: 0 0 auto;
+        padding: 24px 12px;
+        border: 1px dashed #cbd5e1;
+        border-radius: 12px;
+        color: #64748b;
+        font-size: 13px;
+        text-align: center;
+      }
+      .za-template-preview-pane {
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        background: #f8fafc;
+        padding: 12px;
+      }
+      .za-template-preview-title {
+        margin: 0 0 10px 0;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .za-whatsapp-preview {
+        min-height: 230px;
+        border-radius: 12px;
+        padding: 18px 14px;
+        background-color: #efeae2;
+        background-image:
+          radial-gradient(circle at 18% 22%, rgba(134, 118, 94, .08) 0 2px, transparent 2px),
+          radial-gradient(circle at 76% 64%, rgba(134, 118, 94, .07) 0 2px, transparent 2px);
+        background-size: 34px 34px, 42px 42px;
+      }
+      .za-whatsapp-bubble {
+        width: min(92%, 390px);
+        margin-left: auto;
+        overflow: hidden;
+        border-radius: 10px 4px 10px 10px;
+        background: #d9fdd3;
+        box-shadow: 0 1px 1px rgba(11, 20, 26, .13);
+        color: #111b21;
+      }
+      .za-whatsapp-media {
+        min-height: 116px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        background: #cbd5d8;
+        color: #52636c;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .za-whatsapp-media svg {
+        width: 28px;
+        height: 28px;
+      }
+      .za-whatsapp-content {
+        padding: 8px 9px 6px 9px;
+      }
+      .za-whatsapp-header {
+        margin: 0 0 5px 0;
+        font-size: 13px;
+        line-height: 1.4;
+        font-weight: 700;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .za-whatsapp-body {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.42;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .za-whatsapp-footer {
+        margin: 6px 0 0 0;
+        color: #667781;
+        font-size: 11px;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .za-whatsapp-time {
+        display: block;
+        margin-top: 3px;
+        color: #667781;
+        font-size: 10px;
+        line-height: 1;
+        text-align: right;
+      }
+      .za-whatsapp-buttons {
+        border-top: 1px solid rgba(17, 27, 33, .09);
+        background: rgba(255, 255, 255, .42);
+      }
+      .za-whatsapp-button {
+        padding: 8px 10px;
+        color: #027eb5;
+        font-size: 12px;
+        font-weight: 600;
+        text-align: center;
+      }
+      .za-whatsapp-button + .za-whatsapp-button {
+        border-top: 1px solid rgba(17, 27, 33, .09);
+      }
+      .za-template-preview-empty {
+        min-height: 230px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        border: 1px dashed #cbd5e1;
+        border-radius: 12px;
+        color: #64748b;
+        font-size: 13px;
+        line-height: 1.45;
+        text-align: center;
+      }
+      @media (max-width: 720px) {
+        .za-template-modal {
+          height: min(90vh, 760px);
+        }
+        .za-template-controls {
+          grid-template-columns: 1fr;
+        }
+        .za-template-controls .za-btn {
+          width: 100%;
+        }
+        .za-template-workspace {
+          display: block;
+          overflow-y: auto;
+        }
+        .za-template-list {
+          overflow: visible;
+          margin-bottom: 12px;
+        }
+        .za-template-preview-pane {
+          overflow: visible;
+        }
+      }
       .za-emoji-grid {
         display: grid;
         grid-template-columns: repeat(8, minmax(0, 1fr));
@@ -230,6 +512,10 @@
       }
       .za-btn:hover {
         background: #f8fafc;
+      }
+      .za-btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
       }
       .za-btn.primary {
         border-color: #2563eb;
@@ -550,6 +836,756 @@
       document.addEventListener('keydown', onKeydown, true);
       customInput.focus();
     });
+  }
+
+  function getCurrentLocationId() {
+    try {
+      const path = location.pathname || '';
+      const match =
+        path.match(/\/location\/([^/]+)/i) || path.match(/\/locations\/([^/]+)/i);
+      return match ? readString(match[1]) : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function parseJsonSafe(text) {
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
+  async function callTemplateEdge(action, payload) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TEMPLATE_REQUEST_TIMEOUT_MS);
+    const locationId = readString(payload?.location_id || getCurrentLocationId());
+
+    try {
+      const response = await fetch(TEMPLATE_EDGE_URL, {
+        method: 'POST',
+        credentials: 'omit',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-zaptos-location-id': locationId
+        },
+        body: JSON.stringify({ action, ...(payload || {}), location_id: locationId })
+      });
+      const raw = await response.text().catch(() => '');
+      const data = parseJsonSafe(raw);
+
+      if (!response.ok || !data || data.ok === false) {
+        throw new Error(
+          readString(data?.error || data?.message) ||
+            `Falha ao consultar templates (${response.status}).`
+        );
+      }
+
+      return data;
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error('A consulta de templates excedeu o tempo limite.');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function normalizeOfficialInstanceNames(payload) {
+    const rows = Array.isArray(payload?.instances) ? payload.instances : [];
+    const names = rows
+      .map((row) =>
+        readString(
+          typeof row === 'string'
+            ? row
+            : row?.instance_name ?? row?.instanceName ?? row?.name
+        )
+      )
+      .map((name) => name.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }
+
+  function normalizeTemplatePreviewText(value, maxLength) {
+    return String(value == null ? '' : value)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .slice(0, maxLength);
+  }
+
+  function normalizeOfficialTemplates(payload) {
+    const rows = Array.isArray(payload?.templates) ? payload.templates : [];
+    return rows
+      .map((row) => {
+        const templateName = readString(row?.template_name ?? row?.name).toLowerCase();
+        if (!/^[a-z0-9_]{1,512}$/.test(templateName)) return null;
+
+        const preview = normalizeTemplatePreviewText(row?.preview, 2203);
+        const headerText = normalizeTemplatePreviewText(row?.header_text, 503);
+        const bodyText = normalizeTemplatePreviewText(row?.body_text, 1503);
+        const footerText = normalizeTemplatePreviewText(row?.footer_text, 303);
+        const buttons = (Array.isArray(row?.buttons) ? row.buttons : [])
+          .map((button) =>
+            normalizeTemplatePreviewText(
+              typeof button === 'string' ? button : button?.text,
+              83
+            ).trim()
+          )
+          .filter(Boolean)
+          .slice(0, 10);
+
+        return {
+          templateName,
+          language: readString(row?.language),
+          category: readString(row?.category).toUpperCase(),
+          status: readString(row?.status).toUpperCase() || 'UNKNOWN',
+          preview,
+          headerText,
+          bodyText:
+            bodyText || (!headerText && !footerText && !buttons.length ? preview : ''),
+          footerText,
+          buttons,
+          headerFormat: readString(row?.header_format).toUpperCase(),
+          requiresMedia: row?.requires_media === true,
+          hasVariables: row?.has_variables === true,
+          canUse: row?.can_use === true
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function loadSavedTemplateInstance(locationId) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(TEMPLATE_INSTANCE_STORAGE_KEY) || '{}');
+      return readString(parsed?.[locationId]);
+    } catch {
+      return '';
+    }
+  }
+
+  function saveTemplateInstance(locationId, instanceName) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(TEMPLATE_INSTANCE_STORAGE_KEY) || '{}');
+      const map = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+      map[locationId] = readString(instanceName);
+      localStorage.setItem(TEMPLATE_INSTANCE_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+      /* ignore storage failures */
+    }
+  }
+
+  function syncSwitchInstanceSelection(instanceName) {
+    const name = readString(instanceName);
+    if (!name) return;
+
+    const switchSelect = document.getElementById('zaptos-switch-select');
+    if (switchSelect instanceof HTMLSelectElement) {
+      let option = Array.from(switchSelect.options).find((item) => item.value === name);
+      if (!option) {
+        option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        switchSelect.appendChild(option);
+      }
+      switchSelect.value = name;
+      switchSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (window._zaptosSwitch?.state) {
+      window._zaptosSwitch.state.selectedInstance = name;
+    }
+  }
+
+  function getTemplateUsageNote(template) {
+    if (template.status !== 'APPROVED') {
+      return 'Somente templates aprovados podem ser usados.';
+    }
+    if (template.hasVariables) {
+      return 'Este template exige parametros e ainda nao pode ser enviado por este atalho.';
+    }
+    if (template.headerFormat === 'LOCATION') {
+      return 'Este template exige uma localizacao e ainda nao pode ser enviado por este atalho.';
+    }
+    if (template.requiresMedia) {
+      const type = template.headerFormat.toLowerCase();
+      return `Anexe ${type === 'image' ? 'uma imagem' : type === 'video' ? 'um video' : 'um documento'} antes de enviar.`;
+    }
+    return '';
+  }
+
+  async function useOfficialTemplate(instanceName, template) {
+    const safeInstanceName = readString(instanceName)
+      .replace(/[\r\n]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const templateName = readString(template?.templateName).toLowerCase();
+    if (!safeInstanceName || !/^[a-z0-9_]{1,512}$/.test(templateName)) {
+      showToast('Template ou instancia invalida.', 'error', 3000);
+      return false;
+    }
+
+    syncSwitchInstanceSelection(safeInstanceName);
+    const command = `#switch:${safeInstanceName}\n#template:${templateName}`;
+    return await writeAndSendCommand(command, {
+      autoSend: false,
+      readyMessage: template.requiresMedia
+        ? 'Template pronto. Anexe a midia solicitada e clique em enviar.'
+        : 'Template pronto no campo. Clique em enviar para concluir.'
+    });
+  }
+
+  function openOfficialTemplatePicker() {
+    if (typeof templateState.activeClose === 'function') return;
+
+    const locationId = getCurrentLocationId();
+    if (!locationId) {
+      showToast('Nao foi possivel identificar a subconta atual.', 'error', 3000);
+      return;
+    }
+
+    const frame = createDialogFrame(
+      'Templates da API Oficial',
+      'Selecione uma instancia, sincronize os templates e escolha qual deseja usar.'
+    );
+    frame.card.classList.add('za-template-modal');
+    const { overlay, body, footer } = frame;
+    let closed = false;
+    let templates = [];
+    let selectedTemplate = null;
+    let requestVersion = 0;
+
+    const controls = document.createElement('div');
+    controls.className = 'za-template-controls';
+
+    const instanceField = document.createElement('div');
+    const instanceLabel = document.createElement('label');
+    instanceLabel.className = 'za-label';
+    instanceLabel.textContent = 'Instancia oficial';
+
+    const instanceSelect = document.createElement('select');
+    instanceSelect.className = 'za-input';
+    instanceSelect.setAttribute('aria-label', 'Instancia oficial');
+    instanceSelect.disabled = true;
+    instanceField.append(instanceLabel, instanceSelect);
+
+    const syncButton = document.createElement('button');
+    syncButton.type = 'button';
+    syncButton.className = 'za-btn primary';
+    syncButton.textContent = 'Sincronizar';
+    syncButton.disabled = true;
+    controls.append(instanceField, syncButton);
+
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'za-input za-template-search';
+    searchInput.placeholder = 'Buscar template...';
+    searchInput.setAttribute('aria-label', 'Buscar template');
+    searchInput.disabled = true;
+
+    const status = document.createElement('div');
+    status.className = 'za-template-status';
+    status.setAttribute('role', 'status');
+
+    const list = document.createElement('div');
+    list.className = 'za-template-list';
+
+    const previewPane = document.createElement('aside');
+    previewPane.className = 'za-template-preview-pane';
+    previewPane.setAttribute('aria-label', 'Previa do template no WhatsApp');
+
+    const workspace = document.createElement('div');
+    workspace.className = 'za-template-workspace';
+    workspace.append(list, previewPane);
+
+    body.append(controls, searchInput, status, workspace);
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'za-btn';
+    closeButton.textContent = 'Fechar';
+    footer.appendChild(closeButton);
+
+    const setStatus = (message, isError) => {
+      status.textContent = readString(message);
+      status.classList.toggle('error', isError === true);
+    };
+
+    const renderTemplatePreview = () => {
+      previewPane.replaceChildren();
+
+      const title = document.createElement('h4');
+      title.className = 'za-template-preview-title';
+      title.textContent = 'Previa no WhatsApp';
+      previewPane.appendChild(title);
+
+      if (!selectedTemplate) {
+        const empty = document.createElement('div');
+        empty.className = 'za-template-preview-empty';
+        empty.textContent = 'Selecione um template na lista para visualizar a mensagem.';
+        previewPane.appendChild(empty);
+        return;
+      }
+
+      const selectedMeta = document.createElement('div');
+      selectedMeta.className = 'za-template-meta';
+      selectedMeta.textContent = [
+        selectedTemplate.templateName,
+        selectedTemplate.language,
+        selectedTemplate.category
+      ]
+        .filter(Boolean)
+        .join(' - ');
+      selectedMeta.style.margin = '-5px 0 10px 0';
+      previewPane.appendChild(selectedMeta);
+
+      const chat = document.createElement('div');
+      chat.className = 'za-whatsapp-preview';
+      const bubble = document.createElement('div');
+      bubble.className = 'za-whatsapp-bubble';
+
+      const mediaLabels = {
+        IMAGE: 'Imagem do cabecalho',
+        VIDEO: 'Video do cabecalho',
+        DOCUMENT: 'Documento do cabecalho',
+        LOCATION: 'Localizacao'
+      };
+      const mediaIcons = {
+        IMAGE:
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m4 17 5-4 4 3 3-2 4 3"/></svg>',
+        VIDEO:
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="m17 10 4-2v8l-4-2z"/><path d="m9 9 4 3-4 3z"/></svg>',
+        DOCUMENT:
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h5"/></svg>',
+        LOCATION:
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="2.5"/></svg>'
+      };
+      if (['IMAGE', 'VIDEO', 'DOCUMENT', 'LOCATION'].includes(selectedTemplate.headerFormat)) {
+        const media = document.createElement('div');
+        media.className = 'za-whatsapp-media';
+        media.innerHTML = mediaIcons[selectedTemplate.headerFormat];
+        const mediaLabel = document.createElement('span');
+        mediaLabel.textContent = mediaLabels[selectedTemplate.headerFormat];
+        media.appendChild(mediaLabel);
+        bubble.appendChild(media);
+      }
+
+      const content = document.createElement('div');
+      content.className = 'za-whatsapp-content';
+      if (selectedTemplate.headerText) {
+        const header = document.createElement('p');
+        header.className = 'za-whatsapp-header';
+        header.textContent = selectedTemplate.headerText;
+        content.appendChild(header);
+      }
+      if (selectedTemplate.bodyText) {
+        const message = document.createElement('p');
+        message.className = 'za-whatsapp-body';
+        message.textContent = selectedTemplate.bodyText;
+        content.appendChild(message);
+      }
+      if (selectedTemplate.footerText) {
+        const messageFooter = document.createElement('p');
+        messageFooter.className = 'za-whatsapp-footer';
+        messageFooter.textContent = selectedTemplate.footerText;
+        content.appendChild(messageFooter);
+      }
+      const time = document.createElement('span');
+      time.className = 'za-whatsapp-time';
+      time.textContent = `${new Date().toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit'
+      })}  ✓✓`;
+      content.appendChild(time);
+      bubble.appendChild(content);
+
+      if (selectedTemplate.buttons.length) {
+        const buttonList = document.createElement('div');
+        buttonList.className = 'za-whatsapp-buttons';
+        for (const label of selectedTemplate.buttons) {
+          const previewButton = document.createElement('div');
+          previewButton.className = 'za-whatsapp-button';
+          previewButton.textContent = label;
+          buttonList.appendChild(previewButton);
+        }
+        bubble.appendChild(buttonList);
+      }
+
+      chat.appendChild(bubble);
+      previewPane.appendChild(chat);
+
+      const noteText = getTemplateUsageNote(selectedTemplate);
+      if (noteText) {
+        const note = document.createElement('p');
+        note.className = 'za-template-note';
+        note.textContent = noteText;
+        previewPane.appendChild(note);
+      }
+
+      const useButton = document.createElement('button');
+      useButton.type = 'button';
+      useButton.className = 'za-btn primary za-template-use';
+      useButton.textContent = 'Usar template';
+      useButton.disabled = !selectedTemplate.canUse;
+      useButton.addEventListener('click', async () => {
+        const selectedInstance = readString(instanceSelect.value);
+        const templateToUse = selectedTemplate;
+        cleanup();
+        await useOfficialTemplate(selectedInstance, templateToUse);
+      });
+      previewPane.appendChild(useButton);
+    };
+
+    const renderTemplates = () => {
+      list.replaceChildren();
+      const search = normalizeWhitespace(searchInput.value).toLowerCase();
+      const filtered = templates.filter((template) => {
+        if (!search) return true;
+        return [
+          template.templateName,
+          template.language,
+          template.category,
+          template.status,
+          template.preview
+        ]
+          .join(' ')
+          .toLowerCase()
+          .includes(search);
+      });
+
+      if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.className = 'za-template-empty';
+        empty.textContent = templates.length
+          ? 'Nenhum template corresponde a busca.'
+          : 'Nenhum template encontrado para esta instancia.';
+        list.appendChild(empty);
+        renderTemplatePreview();
+        return;
+      }
+
+      for (const template of filtered) {
+        const card = document.createElement('article');
+        card.className = `za-template-card ${
+          selectedTemplate === template ? 'selected' : ''
+        }`;
+        card.tabIndex = 0;
+        card.setAttribute('role', 'button');
+        card.setAttribute('aria-pressed', selectedTemplate === template ? 'true' : 'false');
+
+        const selectCard = () => {
+          const scrollPosition = list.scrollTop;
+          selectedTemplate = template;
+          renderTemplates();
+          list.scrollTop = scrollPosition;
+        };
+        card.addEventListener('click', selectCard);
+        card.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          selectCard();
+        });
+
+        const head = document.createElement('div');
+        head.className = 'za-template-card-head';
+        const identity = document.createElement('div');
+        const name = document.createElement('h4');
+        name.className = 'za-template-name';
+        name.textContent = template.templateName;
+        const meta = document.createElement('div');
+        meta.className = 'za-template-meta';
+        meta.textContent = [template.language, template.category].filter(Boolean).join(' - ');
+        identity.append(name, meta);
+
+        const badge = document.createElement('span');
+        badge.className = `za-template-badge ${
+          template.status === 'APPROVED' ? 'approved' : ''
+        }`;
+        badge.textContent = template.status;
+        head.append(identity, badge);
+        card.appendChild(head);
+        list.appendChild(card);
+      }
+
+      renderTemplatePreview();
+    };
+
+    const setLoading = (loading) => {
+      templateState.loading = !!loading;
+      syncButton.disabled = loading || !readString(instanceSelect.value);
+      instanceSelect.disabled =
+        loading ||
+        (instanceSelect.options.length <= 1 && !readString(instanceSelect.value));
+      syncButton.textContent = loading ? 'Sincronizando...' : 'Sincronizar';
+    };
+
+    const loadTemplates = async () => {
+      const instanceName = readString(instanceSelect.value);
+      if (!instanceName) {
+        templates = [];
+        selectedTemplate = null;
+        searchInput.disabled = true;
+        renderTemplates();
+        setStatus('Selecione uma instancia oficial.', false);
+        return;
+      }
+
+      const version = ++requestVersion;
+      templates = [];
+      selectedTemplate = null;
+      renderTemplates();
+      setLoading(true);
+      setStatus('Sincronizando templates...', false);
+      try {
+        const payload = await callTemplateEdge('sync_templates', {
+          location_id: locationId,
+          instance_name: instanceName
+        });
+        if (closed || version !== requestVersion) return;
+        templates = normalizeOfficialTemplates(payload);
+        selectedTemplate = templates.find((template) => template.canUse) || templates[0] || null;
+        searchInput.disabled = false;
+        renderTemplates();
+        setStatus(
+          `${templates.length} template${templates.length === 1 ? '' : 's'} sincronizado${
+            templates.length === 1 ? '' : 's'
+          }.`,
+          false
+        );
+      } catch (error) {
+        if (closed || version !== requestVersion) return;
+        templates = [];
+        selectedTemplate = null;
+        searchInput.disabled = true;
+        renderTemplates();
+        setStatus(readString(error?.message) || 'Falha ao sincronizar templates.', true);
+      } finally {
+        if (!closed && version === requestVersion) setLoading(false);
+      }
+    };
+
+    const loadInstances = async () => {
+      setLoading(true);
+      setStatus('Buscando instancias oficiais...', false);
+      try {
+        const payload = await callTemplateEdge('list_instances', {
+          location_id: locationId
+        });
+        if (closed) return;
+        const instances = normalizeOfficialInstanceNames(payload);
+        instanceSelect.replaceChildren();
+
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = instances.length
+          ? 'Selecione uma instancia'
+          : 'Nenhuma instancia oficial';
+        instanceSelect.appendChild(placeholder);
+
+        for (const instanceName of instances) {
+          const option = document.createElement('option');
+          option.value = instanceName;
+          option.textContent = instanceName;
+          instanceSelect.appendChild(option);
+        }
+
+        const saved = loadSavedTemplateInstance(locationId);
+        if (saved && instances.includes(saved)) {
+          instanceSelect.value = saved;
+        } else if (instances.length === 1) {
+          instanceSelect.value = instances[0];
+        }
+
+        instanceSelect.disabled = false;
+        syncButton.disabled = !readString(instanceSelect.value);
+        if (!instances.length) {
+          templates = [];
+          selectedTemplate = null;
+          setStatus('Nenhuma instancia da API Oficial encontrada nesta subconta.', true);
+          renderTemplates();
+          return;
+        }
+
+        if (instanceSelect.value) {
+          saveTemplateInstance(locationId, instanceSelect.value);
+          await loadTemplates();
+        } else {
+          setStatus('Selecione uma instancia oficial.', false);
+        }
+      } catch (error) {
+        if (closed) return;
+        instanceSelect.disabled = true;
+        syncButton.disabled = true;
+        setStatus(readString(error?.message) || 'Falha ao buscar instancias oficiais.', true);
+      } finally {
+        if (!closed) setLoading(false);
+      }
+    };
+
+    function cleanup() {
+      if (closed) return;
+      closed = true;
+      requestVersion += 1;
+      templateState.loading = false;
+      templateState.activeClose = null;
+      document.removeEventListener('keydown', onKeydown, true);
+      overlay.remove();
+    }
+
+    function onKeydown(event) {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      cleanup();
+    }
+
+    instanceSelect.addEventListener('change', () => {
+      const instanceName = readString(instanceSelect.value);
+      if (instanceName) saveTemplateInstance(locationId, instanceName);
+      void loadTemplates();
+    });
+    syncButton.addEventListener('click', () => void loadTemplates());
+    searchInput.addEventListener('input', renderTemplates);
+    closeButton.addEventListener('click', cleanup);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) cleanup();
+    });
+
+    templateState.activeClose = cleanup;
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', onKeydown, true);
+    void loadInstances();
+  }
+
+  function findTemplateBottomBar() {
+    const bars = Array.from(
+      document.querySelectorAll("div.flex.items-center.h-\\[40px\\]")
+    ).filter((element) => isVisibleElement(element));
+
+    return (
+      bars.find(
+        (element) =>
+          element.querySelector("div[class*='flex-row'][class*='min-w-0']") &&
+          element.querySelector("div[class*='border-l'][class*='gap-1']")
+      ) ||
+      bars[0] ||
+      null
+    );
+  }
+
+  function findTemplateToolbar() {
+    const recorderWrapper = document.getElementById('zaptos-rec-wrapper');
+    if (recorderWrapper?.parentElement && isVisibleElement(recorderWrapper.parentElement)) {
+      return { toolbar: recorderWrapper.parentElement, recorderWrapper };
+    }
+
+    const bar = findTemplateBottomBar();
+    const leftGroup = bar?.querySelector(
+      "div[class*='flex-row'][class*='items-center'][class*='pl-2'][class*='min-w-0']"
+    );
+    if (leftGroup instanceof Element) {
+      return { toolbar: leftGroup, recorderWrapper: null };
+    }
+
+    const composer = document.querySelector(
+      "div[data-testid*='composer'], div[data-rbd-droppable-id]"
+    );
+    if (!(composer instanceof Element)) return null;
+
+    let best = null;
+    let bestCount = 0;
+    const candidates = composer.querySelectorAll("div[role='group'], div[class*='toolbar'], div");
+    for (const candidate of Array.from(candidates).slice(0, 300)) {
+      const count = candidate.querySelectorAll('button,[role="button"],svg').length;
+      if (count > bestCount) {
+        best = candidate;
+        bestCount = count;
+      }
+    }
+
+    return { toolbar: best || composer, recorderWrapper: null };
+  }
+
+  function ensureTemplateButton() {
+    const locationId = getCurrentLocationId();
+    const existingWrapper = document.getElementById(TEMPLATE_BUTTON_WRAPPER_ID);
+
+    if (!locationId) {
+      if (existingWrapper) existingWrapper.remove();
+      if (typeof templateState.activeClose === 'function') templateState.activeClose();
+      return;
+    }
+
+    const target = findTemplateToolbar();
+    if (!target?.toolbar) return;
+
+    if (existingWrapper instanceof HTMLElement) {
+      if (target.recorderWrapper?.parentElement === target.toolbar) {
+        if (target.recorderWrapper.nextElementSibling !== existingWrapper) {
+          target.recorderWrapper.insertAdjacentElement('afterend', existingWrapper);
+        }
+      } else if (existingWrapper.parentElement !== target.toolbar) {
+        target.toolbar.prepend(existingWrapper);
+      }
+      return;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.id = TEMPLATE_BUTTON_WRAPPER_ID;
+    Object.assign(wrapper.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      marginLeft: '2px',
+      marginRight: '2px'
+    });
+
+    const button = document.createElement('button');
+    button.id = TEMPLATE_BUTTON_ID;
+    button.type = 'button';
+    button.title = 'Templates da API Oficial';
+    button.setAttribute('aria-label', 'Templates da API Oficial');
+    button.innerHTML = `
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"
+           aria-hidden="true">
+        <path d="M6.915 4.03c-1.968 0-3.683 1.28-4.871 3.113C.704 9.208 0 11.883 0 14.449c0 .706.07 1.369.21 1.973.064.28.153.568.265.86.104.27.228.525.371.761.696 1.159 1.818 1.927 3.593 1.927 1.497 0 2.633-.671 3.965-2.444.76-1.012 1.144-1.626 2.663-4.32l.756-1.339.186-.325.183.3 2.152 3.595c.724 1.21 1.665 2.556 2.47 3.314 1.046.987 1.992 1.22 3.06 1.22 1.075 0 1.876-.355 2.455-.843.34-.286.61-.61.81-.973.542-.939.861-2.127.861-3.745 0-2.72-.681-5.357-2.084-7.45-1.282-1.912-2.957-2.93-4.716-2.93-1.047 0-2.088.467-3.053 1.308-.652.57-1.257 1.29-1.82 2.05-.69-.875-1.335-1.547-1.958-2.056-1.182-.966-2.315-1.303-3.454-1.303Zm10.16 2.053c1.147 0 2.188.758 2.992 1.999 1.132 1.748 1.647 4.195 1.647 6.4 0 1.548-.368 2.9-1.839 2.9-.58 0-1.027-.23-1.664-1.004-.496-.601-1.343-1.878-2.832-4.358l-.617-1.028a44.908 44.908 0 0 0-1.255-1.98l.211-.327c1.12-1.667 2.118-2.602 3.358-2.602Zm-10.201.553c1.265 0 2.058.791 2.675 1.446.307.327.737.871 1.234 1.579l-1.02 1.566c-.757 1.163-1.882 3.017-2.837 4.338-1.191 1.649-1.81 1.817-2.486 1.817-.524 0-1.038-.237-1.383-.794-.263-.426-.464-1.13-.464-2.046 0-2.221.63-4.535 1.66-6.088.454-.687.964-1.226 1.533-1.533.33-.18.692-.285 1.088-.285Z" />
+      </svg>
+    `;
+    Object.assign(button.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: '28px',
+      height: '28px',
+      padding: '0',
+      borderRadius: '8px',
+      background: 'transparent',
+      color: '#475467',
+      border: '1px solid transparent',
+      cursor: 'pointer',
+      transition: 'all .16s ease'
+    });
+
+    button.addEventListener('mouseenter', () => {
+      button.style.background = '#f2f4f7';
+      button.style.borderColor = '#e4e7ec';
+    });
+    button.addEventListener('mouseleave', () => {
+      button.style.background = 'transparent';
+      button.style.borderColor = 'transparent';
+    });
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openOfficialTemplatePicker();
+    });
+
+    wrapper.appendChild(button);
+    if (target.recorderWrapper?.parentElement === target.toolbar) {
+      target.recorderWrapper.insertAdjacentElement('afterend', wrapper);
+    } else {
+      target.toolbar.prepend(wrapper);
+    }
   }
 
   function getMenuTriggerFromTarget(target) {
@@ -1355,7 +2391,11 @@
     return findSendButtonInScope(document);
   }
 
-  async function writeAndSendCommand(command) {
+  async function writeAndSendCommand(command, options) {
+    const opts = options || {};
+    const shouldAutoSend = opts.autoSend !== false;
+    const readyMessage = readString(opts.readyMessage);
+
     const fillComposer = async (composer, autoSend) => {
       if (!composer) return false;
 
@@ -1374,6 +2414,7 @@
       composer.focus();
 
       if (!autoSend) {
+        if (readyMessage) showToast(readyMessage, 'success', 3600);
         return true;
       }
 
@@ -1427,7 +2468,7 @@
       return true;
     }
 
-    return await fillComposer(composer, true);
+    return await fillComposer(composer, shouldAutoSend);
   }
 
   function buildCommand(type, messageId, payload) {
@@ -1697,8 +2738,12 @@
     try {
       if (location.href !== state.lastHref) {
         state.lastHref = location.href;
+        if (typeof templateState.activeClose === 'function') {
+          templateState.activeClose();
+        }
       }
       injectMenuActions();
+      ensureTemplateButton();
     } catch (error) {
       log('Tick error', error);
     }
@@ -1707,7 +2752,10 @@
   document.addEventListener('pointerdown', onPointerCapture, true);
   document.addEventListener('click', onPointerCapture, true);
 
-  const observer = new MutationObserver(() => injectMenuActions());
+  const observer = new MutationObserver(() => {
+    injectMenuActions();
+    ensureTemplateButton();
+  });
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true
@@ -1719,6 +2767,7 @@
   window._zaptosMessageActions = {
     state,
     injectMenuActions,
+    openOfficialTemplatePicker,
     resolveMessageContext: () => resolveMessageContext(document.getElementById(DETAILS_ACTION_ID)),
     buildCommand
   };
