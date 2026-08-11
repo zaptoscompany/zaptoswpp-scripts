@@ -2939,7 +2939,7 @@
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
     btn.type = 'button';
-    btn.title = 'Ligar pelo WhatsApp (Zaptos Voip)';
+    btn.title = 'Ligar pelo WhatsApp (Voip)';
 
     btn.style.display = 'flex';
     btn.style.alignItems = 'center';
@@ -3095,7 +3095,7 @@
     `;
 
     const label = document.createElement('span');
-    label.textContent = 'WhatsApp';
+    label.textContent = 'Discador WhatsApp';
 
     btn.appendChild(icon);
     btn.appendChild(label);

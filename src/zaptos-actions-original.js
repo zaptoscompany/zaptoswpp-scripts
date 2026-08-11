@@ -33,6 +33,7 @@
 
   const commandBuilders = Object.assign(
     {
+      reply: (messageId, text) => `#replymessage:${messageId}\n${text}`,
       react: (messageId, emoji) => `#reactmessage:${messageId}\n${emoji}`,
       edit: (messageId, text) => `#editmessage:${messageId}\n${text}`,
       delete: (messageId) => `#delmessage:${messageId}`
@@ -985,7 +986,7 @@
     if (!raw) return '';
 
     const commandMatch = raw.match(
-      /#(?:delmessage|editmessage|reactmessage)\s*:\s*([A-Za-z0-9_-]{8,80})/i
+      /#(?:delmessage|editmessage|reactmessage|replymessage)\s*:\s*([A-Za-z0-9_-]{8,80})/i
     );
     if (commandMatch) return readString(commandMatch[1]);
 
@@ -1436,6 +1437,7 @@
     }
 
     if (type === 'delete') return readString(builder(messageId));
+    if (type === 'reply') return readString(builder(messageId, payload));
     if (type === 'react') return readString(builder(messageId, payload));
     if (type === 'edit') return readString(builder(messageId, payload));
     return '';
@@ -1470,6 +1472,33 @@
     if (!emoji) return;
 
     const command = buildCommand('react', messageId, emoji);
+    if (!command) return;
+    await writeAndSendCommand(command);
+  }
+
+  async function runReplyAction(context) {
+    const messageId = await ensureMessageId(context);
+    if (!messageId) return;
+
+    const replyText = await showModernPrompt({
+      title: 'Responder mensagem',
+      subtitle: `ID: ${messageId}`,
+      label: 'Digite a resposta',
+      defaultValue: '',
+      placeholder: 'Sua resposta...',
+      multiline: true,
+      confirmText: 'Enviar',
+      cancelText: 'Cancelar'
+    });
+    if (replyText == null) return;
+
+    const payload = normalizeMessageForEdit(replyText);
+    if (!payload.trim()) {
+      showToast('Resposta vazia. Envio cancelado.', 'error', 2600);
+      return;
+    }
+
+    const command = buildCommand('reply', messageId, payload);
     if (!command) return;
     await writeAndSendCommand(command);
   }
@@ -1542,6 +1571,7 @@
     const labelSpan = document.createElement('span');
     labelSpan.className = 'font-inter text-sm font-normal leading-[18px]';
     labelSpan.textContent = label;
+    labelSpan.style.whiteSpace = 'nowrap';
     if (isDanger) labelSpan.style.color = '#dc2626';
 
     row.append(iconWrap, labelSpan);
@@ -1597,7 +1627,7 @@
     if (!(menuRoot instanceof Element)) return;
 
     const existingItems = Array.from(parentRow.querySelectorAll(ACTION_ITEM_SELECTOR));
-    if (existingItems.length >= 3) {
+    if (existingItems.length >= 4) {
       return;
     }
     if (existingItems.length) {
@@ -1606,6 +1636,12 @@
 
     const context = resolveMessageContext(detailsAction);
     menuContextCache.set(menuRoot, context);
+
+    const replyItem = createMenuActionItem({
+      label: 'Responder Mensagem',
+      iconPath: 'M9 17l-5-5 5-5m-5 5h10a6 6 0 016 6v1',
+      action: 'reply'
+    });
 
     const reactItem = createMenuActionItem({
       label: 'Reagir a Mensagem',
@@ -1627,12 +1663,14 @@
       isDanger: true
     });
 
+    bindActionClick(replyItem, runReplyAction, parentRow, detailsAction);
     bindActionClick(reactItem, runReactAction, parentRow, detailsAction);
     bindActionClick(editItem, runEditAction, parentRow, detailsAction);
     bindActionClick(deleteItem, runDeleteAction, parentRow, detailsAction);
 
     const referenceNode = detailsAction.nextSibling;
     const fragment = document.createDocumentFragment();
+    fragment.appendChild(replyItem);
     fragment.appendChild(reactItem);
     fragment.appendChild(editItem);
     fragment.appendChild(deleteItem);

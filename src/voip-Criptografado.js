@@ -1896,7 +1896,8 @@
 
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.setAttribute('aria-label','Ligar pelo WhatsApp');
+    btn.title = 'Ligar pelo WhatsApp (Voip)';
+    btn.setAttribute('aria-label','Ligar pelo WhatsApp (Voip)');
     btn.innerHTML = `
       <span style="display:inline-flex;align-items:center;gap:8px;justify-content:center;">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
