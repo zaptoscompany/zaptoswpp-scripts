@@ -20,6 +20,13 @@ const MAX_INSTANCES = 100;
 const MAX_TEMPLATE_PAGES = 20;
 const FETCH_TIMEOUT_MS = readPositiveIntEnv('WABA_TEMPLATE_FETCH_TIMEOUT_MS', 12000);
 const GRAPH_VERSION = normalizeGraphVersion(Deno.env.get('META_GRAPH_VERSION'));
+const MEDIA_TIMEOUT_MS = readPositiveIntEnv('WABA_TEMPLATE_MEDIA_TIMEOUT_MS', 120000);
+const MEDIA_RULES: Record<string, { types: string[]; maxMB: number }> = {
+  IMAGE: { types: ['image/jpeg', 'image/png'], maxMB: 5 },
+  VIDEO: { types: ['video/mp4'], maxMB: 16 },
+  DOCUMENT: { types: ['application/pdf'], maxMB: 100 }
+};
+const MAX_MULTIPART_BYTES = 100 * 1024 * 1024 + 65536;
 
 type JsonMap = Record<string, unknown>;
 
@@ -92,6 +99,48 @@ async function readJsonBody(req: Request): Promise<JsonMap> {
   } catch {
     throw new Error('INVALID_BODY');
   }
+}
+
+async function readTemplateRequest(req: Request): Promise<{ payload: JsonMap; media: File | null }> {
+  if (!req.headers.get('content-type')?.toLowerCase().startsWith('multipart/form-data')) {
+    return { payload: await readJsonBody(req), media: null };
+  }
+  if (Number(req.headers.get('content-length')) > MAX_MULTIPART_BYTES || !req.body) {
+    throw new Error('TEMPLATE_MEDIA_TOO_LARGE');
+  }
+  let received = 0;
+  const limited = req.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      received += chunk.byteLength;
+      if (received > MAX_MULTIPART_BYTES) throw new Error('TEMPLATE_MEDIA_TOO_LARGE');
+      controller.enqueue(chunk);
+    }
+  }));
+  let form: FormData;
+  try {
+    form = await new Response(limited, { headers: { 'Content-Type': req.headers.get('content-type')! } }).formData();
+  } catch {
+    throw new Error(received > MAX_MULTIPART_BYTES ? 'TEMPLATE_MEDIA_TOO_LARGE' : 'INVALID_BODY');
+  }
+  const raw = form.get('payload');
+  if (typeof raw !== 'string' || form.getAll('payload').length !== 1 || form.getAll('media').length !== 1) throw new Error('INVALID_BODY');
+  const payload = await readJsonBody(new Request('https://local.invalid', { method: 'POST', body: raw }));
+  const media = form.get('media');
+  if (!(media instanceof File) || payload.action !== 'create_template') throw new Error('INVALID_BODY');
+  return { payload, media };
+}
+
+async function validateTemplateMediaFile(file: File, format: string): Promise<void> {
+  const rule = MEDIA_RULES[format];
+  if (!rule || !rule.types.includes(file.type) || !file.size) throw new Error('INVALID_TEMPLATE_MEDIA');
+  if (file.size > rule.maxMB * 1024 * 1024) throw new Error('TEMPLATE_MEDIA_TOO_LARGE');
+  const bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  const ascii = (start: number, end: number) => String.fromCharCode(...bytes.slice(start, end));
+  const valid = file.type === 'image/jpeg' ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+    : file.type === 'image/png' ? [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)
+    : file.type === 'application/pdf' ? ascii(0, 5) === '%PDF-'
+    : ascii(4, 8) === 'ftyp';
+  if (!valid) throw new Error('INVALID_TEMPLATE_MEDIA');
 }
 
 function resolveLocationId(req: Request, payload: JsonMap): string {
@@ -273,10 +322,11 @@ async function requestJsonWithTimeout(
   url: URL,
   apiKey: string,
   method: 'GET' | 'POST' = 'GET',
-  body?: JsonMap
+  body?: JsonMap | File,
+  timeoutMs = FETCH_TIMEOUT_MS
 ): Promise<JsonMap> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(url.toString(), {
@@ -286,13 +336,14 @@ async function requestJsonWithTimeout(
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${apiKey}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {})
+        ...(body ? { 'Content-Type': body instanceof File ? body.type : 'application/json' } : {})
       },
-      body: body ? JSON.stringify(body) : undefined
+      body: body instanceof File ? body : body ? JSON.stringify(body) : undefined
     });
     const raw = await response.text().catch(() => '');
 
     if (!response.ok) {
+      if (body instanceof File && (response.status === 404 || response.status === 405)) throw new Error('GATEWAY_MEDIA_NOT_SUPPORTED');
       if (response.status === 401 || response.status === 403) {
         throw new Error('GATEWAY_NOT_AUTHORIZED');
       }
@@ -386,11 +437,12 @@ function buildTemplateSubmission(payload: JsonMap): {
   }
 
   const headerFormat = readString(input.header_format).toUpperCase() || 'NONE';
-  if (!['NONE', 'TEXT'].includes(headerFormat)) {
+  if (!['NONE', 'TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerFormat)) {
     throw new Error('UNSUPPORTED_TEMPLATE_HEADER');
   }
 
   const components: JsonMap[] = [];
+  if (MEDIA_RULES[headerFormat]) components.push({ type: 'HEADER', format: headerFormat });
   if (headerFormat === 'TEXT') {
     const headerText = normalizeTemplateText(input.header_text, 60);
     if (!headerText || headerText.length > 60) throw new Error('INVALID_TEMPLATE_HEADER');
@@ -837,13 +889,28 @@ async function fetchOfficialTemplates(row: OfficialInstanceRow) {
   });
 }
 
-async function createOfficialTemplate(row: OfficialInstanceRow, payload: JsonMap) {
+async function createOfficialTemplate(row: OfficialInstanceRow, payload: JsonMap, media: File | null = null) {
   const wabaId = readString(row.waba_id);
   if (!/^\d+$/.test(wabaId)) throw new Error('INSTANCE_METADATA_INVALID');
 
   const submission = buildTemplateSubmission(payload);
+  const mediaHeader = submission.components.find((component) => component.type === 'HEADER' && MEDIA_RULES[readString(component.format)]);
+  if (mediaHeader && !media) throw new Error('TEMPLATE_MEDIA_REQUIRED');
+  if (media && !mediaHeader) throw new Error('INVALID_TEMPLATE_MEDIA');
+  if (media && mediaHeader) await validateTemplateMediaFile(media, readString(mediaHeader.format));
   const apiKey = await decryptOfficialApiKey(row);
   const baseUrl = resolveGatewayBaseUrl(row);
+  if (media && mediaHeader) {
+    // Rota do gateway: executa o Resumable Upload da Meta sem expor a credencial.
+    const uploadUrl = new URL(`${baseUrl}/${GRAPH_VERSION}/${wabaId}/template_media`);
+    uploadUrl.searchParams.set('file_name', media.name.replace(/[\r\n\u0000]/g, '').slice(0, 200) || 'template');
+    uploadUrl.searchParams.set('file_length', String(media.size));
+    uploadUrl.searchParams.set('file_type', media.type);
+    const uploaded = await requestJsonWithTimeout(uploadUrl, apiKey, 'POST', media, MEDIA_TIMEOUT_MS);
+    const handle = readString(uploaded.h);
+    if (!handle || handle.length > 8192 || /[\r\n\u0000]/.test(handle)) throw new Error('GATEWAY_INVALID_RESPONSE');
+    mediaHeader.example = { header_handle: [handle] };
+  }
   const url = new URL(
     `${baseUrl}/${GRAPH_VERSION}/${wabaId}/message_templates`
   );
@@ -866,6 +933,13 @@ async function createOfficialTemplate(row: OfficialInstanceRow, payload: JsonMap
 
 function publicError(error: unknown): { status: number; code: string; message: string } {
   const code = readString((error as { message?: unknown })?.message);
+  const mediaErrors: Record<string, { status: number; message: string }> = {
+    TEMPLATE_MEDIA_REQUIRED: { status: 400, message: 'Selecione um arquivo de exemplo para o cabeçalho.' },
+    INVALID_TEMPLATE_MEDIA: { status: 400, message: 'Arquivo inválido. Use JPEG/PNG, MP4 ou PDF conforme o cabeçalho.' },
+    TEMPLATE_MEDIA_TOO_LARGE: { status: 413, message: 'Arquivo muito grande. Limites: imagem 5 MB, vídeo 16 MB e PDF 100 MB.' },
+    GATEWAY_MEDIA_NOT_SUPPORTED: { status: 502, message: 'Atualize o gateway oficial para habilitar o upload de exemplos de templates.' }
+  };
+  if (mediaErrors[code]) return { code: code.toLowerCase(), ...mediaErrors[code] };
   if (code === 'INVALID_BODY') {
     return { status: 400, code: 'invalid_body', message: 'Corpo da requisicao invalido.' };
   }
@@ -876,7 +950,7 @@ function publicError(error: unknown): { status: number; code: string; message: s
     return { status: 409, code: 'instance_name_ambiguous', message: 'Existem instâncias oficiais com o mesmo nome. Renomeie uma delas para continuar.' };
   }
   if (code === 'GATEWAY_NOT_AUTHORIZED') {
-    return { status: 502, code: 'gateway_not_authorized', message: 'A instância não está autorizada a consultar templates.' };
+    return { status: 502, code: 'gateway_not_authorized', message: 'A instância não está autorizada a executar esta operação de templates.' };
   }
   if (code === 'GATEWAY_RATE_LIMITED') {
     return { status: 429, code: 'gateway_rate_limited', message: 'A consulta foi limitada temporariamente. Tente novamente.' };
@@ -897,7 +971,7 @@ function publicError(error: unknown): { status: number; code: string; message: s
     return { status: 400, code: 'template_examples_required', message: 'Informe um exemplo para cada parâmetro do template.' };
   }
   if (code === 'UNSUPPORTED_TEMPLATE_HEADER') {
-    return { status: 400, code: 'unsupported_template_header', message: 'Nesta tela, use cabeçalho de texto ou sem cabeçalho.' };
+    return { status: 400, code: 'unsupported_template_header', message: 'Use cabeçalho de texto, imagem, vídeo, PDF ou sem cabeçalho.' };
   }
   if (code === 'GATEWAY_TEMPLATE_REJECTED') {
     return { status: 422, code: 'template_rejected', message: 'A Meta recusou os dados do template. Revise o conteudo e tente novamente.' };
@@ -915,7 +989,7 @@ function publicError(error: unknown): { status: number; code: string; message: s
   if ((error as { name?: unknown })?.name === 'AbortError') {
     return { status: 504, code: 'gateway_timeout', message: 'A consulta de templates excedeu o tempo limite.' };
   }
-  return { status: 502, code: 'template_sync_failed', message: 'Não foi possível sincronizar os templates.' };
+  return { status: 502, code: 'template_sync_failed', message: 'Não foi possível concluir a operação de templates.' };
 }
 
 Deno.serve(async (req: Request) => {
@@ -933,7 +1007,7 @@ Deno.serve(async (req: Request) => {
       return errorResponse(500, 'server_not_configured', 'Serviço não configurado.');
     }
 
-    const payload = await readJsonBody(req);
+    const { payload, media } = await readTemplateRequest(req);
     const action = readString(payload.action).toLowerCase();
     const locationId = resolveLocationId(req, payload);
     if (!isValidLocationId(locationId)) {
@@ -989,7 +1063,7 @@ Deno.serve(async (req: Request) => {
         return errorResponse(404, 'instance_not_found', 'Instância oficial não encontrada nesta subconta.');
       }
 
-      const template = await createOfficialTemplate(instance, payload);
+      const template = await createOfficialTemplate(instance, payload, media);
       return jsonResponse({
         ok: true,
         instance_name: normalizeInstanceName(instance),

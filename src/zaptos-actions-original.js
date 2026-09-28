@@ -24,6 +24,20 @@
     window.__ZAPTOS_WABA_TEMPLATES_EDGE_URL__ ||
     'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/get-waba-templates';
   const TEMPLATE_REQUEST_TIMEOUT_MS = 15000;
+  const TEMPLATE_MEDIA_TIMEOUT_MS = 180000;
+  const TEMPLATE_MEDIA_RULES = {
+    IMAGE: {
+      label: 'Imagem', accept: 'image/jpeg,image/png,.jpg,.jpeg,.png',
+      types: ['image/jpeg', 'image/png'], maxMB: 5
+    },
+    VIDEO: {
+      label: 'Vídeo', accept: 'video/mp4,.mp4', types: ['video/mp4'], maxMB: 16
+    },
+    DOCUMENT: {
+      label: 'Documento PDF', accept: 'application/pdf,.pdf',
+      types: ['application/pdf'], maxMB: 100
+    }
+  };
   const TEMPLATE_INSTANCE_STORAGE_KEY = 'zaptos_waba_template_instance_by_location';
   const ACTIONS_INSTANCES_EDGE_URL =
     window.__ZAPTOS_SWITCH_EDGE_URL__ ||
@@ -432,6 +446,11 @@
       .za-whatsapp-media svg {
         width: 28px;
         height: 28px;
+      }
+      .za-whatsapp-media span {
+        max-width: 100%;
+        padding: 0 8px;
+        overflow-wrap: anywhere;
       }
       .za-whatsapp-content {
         padding: 8px 9px 6px 9px;
@@ -1322,10 +1341,16 @@
     }
   }
 
-  async function callTemplateEdge(action, payload) {
+  async function callTemplateEdge(action, payload, mediaFile) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TEMPLATE_REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), mediaFile ? TEMPLATE_MEDIA_TIMEOUT_MS : TEMPLATE_REQUEST_TIMEOUT_MS);
     const locationId = readString(payload?.location_id || getCurrentLocationId());
+    const json = JSON.stringify({ action, ...(payload || {}), location_id: locationId });
+    const body = mediaFile ? new FormData() : json;
+    if (mediaFile) {
+      body.append('payload', json);
+      body.append('media', mediaFile, mediaFile.name);
+    }
 
     try {
       const response = await fetch(TEMPLATE_EDGE_URL, {
@@ -1333,10 +1358,10 @@
         credentials: 'omit',
         signal: controller.signal,
         headers: {
-          'Content-Type': 'application/json',
+          ...(mediaFile ? {} : { 'Content-Type': 'application/json' }),
           'x-zaptos-location-id': locationId
         },
-        body: JSON.stringify({ action, ...(payload || {}), location_id: locationId })
+        body
       });
       const raw = await response.text().catch(() => '');
       const data = parseJsonSafe(raw);
@@ -1351,7 +1376,7 @@
       return data;
     } catch (error) {
       if (error?.name === 'AbortError') {
-        throw new Error('A consulta de templates excedeu o tempo limite.');
+        throw new Error('A operação excedeu o tempo limite. Sincronize os templates antes de tentar enviar novamente.');
       }
       throw error;
     } finally {
@@ -1504,7 +1529,7 @@
           footerText,
           buttons,
           headerFormat: readString(row?.header_format).toUpperCase(),
-          requiresMedia: row?.requires_media === true,
+          requiresMedia: Boolean(TEMPLATE_MEDIA_RULES[readString(row?.header_format).toUpperCase()]),
           hasVariables: row?.has_variables === true,
           parameterSchema,
           canUse: row?.can_use === true && parameterSchema.supported
@@ -1553,7 +1578,52 @@
     }
   }
 
-  function getTemplateUsageNote(template, parameterResult) {
+  function validateTemplateMedia(file, format) {
+    const rule = TEMPLATE_MEDIA_RULES[format];
+    if (!rule) return 'Tipo de mídia não suportado.';
+    if (!file) return `Selecione o arquivo: ${rule.label.toLowerCase()}.`;
+    if (!rule.types.includes(file.type)) {
+      const extensions = rule.accept.split(',').filter((value) => value.startsWith('.'));
+      return `Formato inválido. Use ${extensions.join(', ')}.`;
+    }
+    if (!file.size) return 'O arquivo está vazio.';
+    if (file.size > rule.maxMB * 1024 * 1024) return `O arquivo deve ter no máximo ${rule.maxMB} MB.`;
+    return '';
+  }
+
+  function createTemplateMediaField(format, onChange) {
+    const field = createFormControl({ label: 'Arquivo do cabeçalho', type: 'file', full: true });
+    const help = document.createElement('p');
+    help.className = 'za-form-help';
+    field.wrapper.appendChild(help);
+    field.setFormat = (value) => {
+      const rule = TEMPLATE_MEDIA_RULES[value];
+      field.input.accept = rule?.accept || '';
+      help.textContent = rule
+        ? `${rule.label} — até ${rule.maxMB} MB.${value === 'VIDEO' ? ' Use H.264 e áudio AAC.' : ''}`
+        : '';
+    };
+    field.input.addEventListener('change', () => onChange(field.input.files?.[0] || null));
+    field.setFormat(format);
+    return field;
+  }
+
+  function renderTemplateMediaPreview(host, format, file, objectUrl) {
+    host.replaceChildren();
+    if (file && objectUrl && ['IMAGE', 'VIDEO'].includes(format)) {
+      const element = document.createElement(format === 'IMAGE' ? 'img' : 'video');
+      element.src = objectUrl;
+      element.style.cssText = 'display:block;width:100%;max-height:220px;object-fit:contain;border-radius:8px';
+      if (format === 'VIDEO') { element.controls = true; element.preload = 'metadata'; }
+      else element.alt = file.name;
+      host.appendChild(element);
+    }
+    const label = document.createElement('span');
+    label.textContent = file?.name || TEMPLATE_MEDIA_RULES[format]?.label || 'Arquivo do cabeçalho';
+    host.appendChild(label);
+  }
+
+  function getTemplateUsageNote(template, parameterResult, mediaFile) {
     if (template.status !== 'APPROVED') {
       return 'Somente templates aprovados podem ser usados.';
     }
@@ -1564,8 +1634,7 @@
       return parameterResult.error;
     }
     if (template.requiresMedia) {
-      const type = template.headerFormat.toLowerCase();
-      return `Anexe ${type === 'image' ? 'uma imagem' : type === 'video' ? 'um vídeo' : 'um documento'} antes de enviar.`;
+      return validateTemplateMedia(mediaFile, template.headerFormat) || 'O arquivo será anexado à conversa. Aguarde o upload antes de enviar.';
     }
     return '';
   }
@@ -1694,7 +1763,7 @@
       .replace(/=+$/g, '');
   }
 
-  async function useOfficialTemplate(instanceName, template, parameters) {
+  async function useOfficialTemplate(instanceName, template, parameters, mediaFile) {
     const safeInstanceName = readString(instanceName)
       .replace(/[\r\n]+/g, ' ')
       .replace(/\s+/g, ' ')
@@ -1705,7 +1774,10 @@
       return false;
     }
 
-    syncSwitchInstanceSelection(safeInstanceName);
+    if (template.requiresMedia) {
+      const error = validateTemplateMedia(mediaFile, template.headerFormat);
+      if (error) { showToast(error, 'error', 3500); return false; }
+    }
     let command = `#switch:${safeInstanceName}\n#template:${templateName}`;
     if (parameters && Object.keys(parameters).length) {
       const decodedBytes = officialTemplateUtf8Length(JSON.stringify(parameters));
@@ -1722,8 +1794,13 @@
     }
     return await writeAndSendCommand(command, {
       autoSend: false,
+      prepareComposer: (composer) => {
+        if (template.requiresMedia && !attachTemplateMedia(composer, mediaFile)) return false;
+        syncSwitchInstanceSelection(safeInstanceName);
+        return true;
+      },
       readyMessage: template.requiresMedia
-        ? 'Template pronto. Anexe a mídia solicitada e clique em enviar.'
+        ? 'Template preparado. Aguarde o arquivo aparecer na conversa e clique em enviar.'
         : 'Template pronto no campo. Clique em enviar para concluir.'
     });
   }
@@ -1998,6 +2075,13 @@
     let closed = false;
     let saving = false;
     const exampleValues = {};
+    let mediaFile = null;
+    let mediaObjectUrl = '';
+    const clearMedia = () => {
+      if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
+      mediaObjectUrl = '';
+      mediaFile = null;
+    };
 
     const grid = document.createElement('div');
     grid.className = 'za-template-editor-grid';
@@ -2046,7 +2130,10 @@
       value: 'NONE',
       options: [
         { value: 'NONE', label: 'Sem cabeçalho' },
-        { value: 'TEXT', label: 'Texto' }
+        { value: 'TEXT', label: 'Texto' },
+        { value: 'IMAGE', label: 'Imagem' },
+        { value: 'VIDEO', label: 'Vídeo' },
+        { value: 'DOCUMENT', label: 'Documento PDF' }
       ]
     });
     const headerField = createFormControl({
@@ -2055,6 +2142,18 @@
       full: true,
       maxLength: 60
     });
+    const mediaField = createTemplateMediaField('NONE', (file) => {
+      clearMedia();
+      mediaFile = file;
+      const error = validateTemplateMedia(file, headerFormatField.input.value);
+      showError(error);
+      if (!error) mediaObjectUrl = URL.createObjectURL(file);
+      renderPreview();
+    });
+    const mediaInfo = document.createElement('p');
+    mediaInfo.className = 'za-form-help';
+    mediaInfo.textContent = 'Envie um arquivo de exemplo para análise da Meta. Ao usar o template, você poderá escolher outro arquivo do mesmo tipo.';
+    mediaField.wrapper.appendChild(mediaInfo);
     const bodyField = createFormControl({
       label: 'Corpo da mensagem',
       type: 'textarea',
@@ -2103,6 +2202,7 @@
       categoryField.wrapper,
       headerFormatField.wrapper,
       headerField.wrapper,
+      mediaField.wrapper,
       bodyField.wrapper,
       footerField.wrapper,
       buttonsField.wrapper,
@@ -2174,6 +2274,9 @@
       const isAuth = categoryField.input.value === 'AUTHENTICATION';
       headerFormatField.wrapper.hidden = isAuth;
       headerField.wrapper.hidden = isAuth || headerFormatField.input.value !== 'TEXT';
+      mediaField.wrapper.hidden = isAuth || !TEMPLATE_MEDIA_RULES[headerFormatField.input.value];
+      mediaField.input.disabled = mediaField.wrapper.hidden;
+      bodyField.input.required = !isAuth;
       bodyField.wrapper.hidden = isAuth;
       footerField.wrapper.hidden = isAuth;
       buttonsField.wrapper.hidden = isAuth;
@@ -2198,8 +2301,11 @@
           applyTemplatePreviewValues(bodyField.input.value, values, 'BODY') ||
           'Conteúdo do template',
         footer: footerField.input.value,
-        buttons: parsedButtons.buttons.map((button) => button.text)
+        buttons: parsedButtons.buttons.map((button) => button.text),
+        mediaLabel: TEMPLATE_MEDIA_RULES[headerFormatField.input.value]?.label
       });
+      const mediaHost = previewHost.querySelector('.za-whatsapp-media');
+      if (mediaHost) renderTemplateMediaPreview(mediaHost, headerFormatField.input.value, mediaFile, mediaObjectUrl);
     }
 
     const buildSubmission = () => {
@@ -2219,6 +2325,10 @@
       }
       if (!isAuthentication && !readString(bodyField.input.value)) {
         throw new Error('Informe o corpo do template.');
+      }
+      if (!isAuthentication && TEMPLATE_MEDIA_RULES[headerFormatField.input.value]) {
+        const error = validateTemplateMedia(mediaFile, headerFormatField.input.value);
+        if (error) throw new Error(error);
       }
       for (const [label, indexes] of [
         ['cabeçalho', headerIndexes],
@@ -2259,6 +2369,7 @@
       if (closed) return;
       closed = true;
       templateState.activeCreatorClose = null;
+      clearMedia();
       document.removeEventListener('keydown', onKeydown, true);
       overlay.remove();
     }
@@ -2274,14 +2385,20 @@
       if (saving) return;
       showError('');
       let template;
+      let submissionMedia = null;
       try {
         template = buildSubmission();
+        if (TEMPLATE_MEDIA_RULES[template.header_format]) submissionMedia = mediaFile;
       } catch (error) {
         showError(error?.message || 'Revise os dados do template.');
         return;
       }
       saving = true;
       submitButton.disabled = true;
+      const formInputs = Array.from(form.querySelectorAll('input, select, textarea'));
+      const disabledStates = formInputs.map((input) => input.disabled);
+      formInputs.forEach((input) => { input.disabled = true; });
+      const unlockForm = () => formInputs.forEach((input, index) => { input.disabled = disabledStates[index]; });
       const confirmed = await showModernConfirm({
         title: 'Enviar template para aprovacao?',
         message: 'Depois do envio, a Meta analisara o nome, a categoria e o conteudo.',
@@ -2290,6 +2407,7 @@
       });
       if (!confirmed || closed) {
         saving = false;
+        unlockForm();
         submitButton.disabled = false;
         return;
       }
@@ -2301,7 +2419,7 @@
           instance_name: safeInstanceName,
           template,
           confirm_submission: true
-        });
+        }, submissionMedia);
         cleanup();
         showToast('Template enviado para aprovacao da Meta.', 'success', 3600);
         if (typeof onCreated === 'function') await onCreated();
@@ -2309,10 +2427,19 @@
         showError(error?.message || 'Não foi possível enviar o template.');
       } finally {
         saving = false;
+        unlockForm();
         submitButton.disabled = false;
         submitButton.textContent = 'Enviar para aprovacao';
       }
     };
+
+    headerFormatField.input.addEventListener('change', () => {
+      clearMedia();
+      mediaField.input.value = '';
+      mediaField.setFormat(headerFormatField.input.value);
+      showError('');
+      renderPreview();
+    });
 
     for (const input of [
       categoryField.input,
@@ -2378,6 +2505,13 @@
     let templates = [];
     let selectedTemplate = null;
     let selectedTemplateParameters = {};
+    let selectedMediaFile = null;
+    let selectedMediaUrl = '';
+    const clearSelectedMedia = () => {
+      if (selectedMediaUrl) URL.revokeObjectURL(selectedMediaUrl);
+      selectedMediaUrl = '';
+      selectedMediaFile = null;
+    };
     let parameterAddressSearchCleanup = null;
     let requestVersion = 0;
 
@@ -2551,14 +2685,32 @@
           selectedTemplate,
           selectedTemplateParameters
         );
-        if (useButton) useButton.disabled = !selectedTemplate.canUse || !result.ok;
+        const mediaError = selectedTemplate.requiresMedia
+          ? validateTemplateMedia(selectedMediaFile, selectedTemplate.headerFormat) : '';
+        if (useButton) useButton.disabled = !selectedTemplate.canUse || !result.ok || Boolean(mediaError);
         if (usageNote) {
-          const noteText = getTemplateUsageNote(selectedTemplate, result);
+          const noteText = getTemplateUsageNote(selectedTemplate, result, selectedMediaFile);
           usageNote.textContent = noteText;
           usageNote.hidden = !noteText;
         }
         return result;
       };
+      if (selectedTemplate.requiresMedia) {
+        const mediaField = createTemplateMediaField(selectedTemplate.headerFormat, (file) => {
+          clearSelectedMedia();
+          selectedMediaFile = file;
+          if (!validateTemplateMedia(file, selectedTemplate.headerFormat)) selectedMediaUrl = URL.createObjectURL(file);
+          const host = previewPane.querySelector('.za-whatsapp-media');
+          if (host) renderTemplateMediaPreview(host, selectedTemplate.headerFormat, file, selectedMediaUrl);
+          refreshTemplateControls();
+        });
+        if (selectedMediaFile) {
+          const transfer = new DataTransfer();
+          transfer.items.add(selectedMediaFile);
+          mediaField.input.files = transfer.files;
+        }
+        previewPane.appendChild(mediaField.wrapper);
+      }
       if (schema?.hasParameterFields) {
         const parameterBox = document.createElement('section');
         parameterBox.className = 'za-template-parameter-box';
@@ -2665,6 +2817,7 @@
         const mediaLabel = document.createElement('span');
         mediaLabel.textContent = mediaLabels[selectedTemplate.headerFormat];
         media.appendChild(mediaLabel);
+        if (selectedTemplate.requiresMedia) renderTemplateMediaPreview(media, selectedTemplate.headerFormat, selectedMediaFile, selectedMediaUrl);
         bubble.appendChild(media);
       }
 
@@ -2740,11 +2893,17 @@
         }
         const selectedInstance = readString(instanceSelect.value);
         const templateToUse = selectedTemplate;
+        const mediaToUse = selectedMediaFile;
+        if (templateToUse.requiresMedia) {
+          const error = validateTemplateMedia(mediaToUse, templateToUse.headerFormat);
+          if (error) { showToast(error, 'error', 4000); return; }
+        }
         cleanup();
         await useOfficialTemplate(
           selectedInstance,
           templateToUse,
-          parameterResult.parameters
+          parameterResult.parameters,
+          mediaToUse
         );
       });
       previewPane.appendChild(useButton);
@@ -2790,6 +2949,7 @@
 
         const selectCard = () => {
           const scrollPosition = list.scrollTop;
+          if (selectedTemplate !== template) clearSelectedMedia();
           selectedTemplate = template;
           selectedTemplateParameters = {};
           renderTemplates();
@@ -2837,6 +2997,7 @@
     };
 
     const loadTemplates = async () => {
+      clearSelectedMedia();
       const instanceName = readString(instanceSelect.value);
       if (!instanceName) {
         templates = [];
@@ -2949,6 +3110,7 @@
       if (closed) return;
       closed = true;
       requestVersion += 1;
+      clearSelectedMedia();
       if (typeof parameterAddressSearchCleanup === 'function') {
         parameterAddressSearchCleanup();
         parameterAddressSearchCleanup = null;
@@ -5908,6 +6070,41 @@
     return findSendButtonInScope(document);
   }
 
+  function attachTemplateMedia(composer, file) {
+    const acceptsFile = (input) => {
+      if (input.disabled || input.closest('.za-overlay')) return false;
+      const accept = readString(input.accept).toLowerCase();
+      return !accept || accept.split(',').some((entry) => {
+        const value = entry.trim();
+        return value === '*/*' || value === file.type ||
+          (value.endsWith('/*') && file.type.startsWith(value.slice(0, -1))) ||
+          (value.startsWith('.') && file.name.toLowerCase().endsWith(value));
+      });
+    };
+    let scope = composer?.parentElement;
+    let candidates = [];
+    for (let depth = 0; scope && scope !== document.body && depth < 10; depth += 1, scope = scope.parentElement) {
+      candidates = Array.from(scope.querySelectorAll('input[type="file"]')).filter(acceptsFile);
+      if (candidates.length) break;
+    }
+    // O GHL também pode montar o upload fora do contêiner do compositor.
+    if (!candidates.length) candidates = Array.from(document.querySelectorAll('input[type="file"]')).filter(acceptsFile);
+    if (candidates.length !== 1) {
+      showToast('Não foi possível localizar o anexo da conversa. Abra o botão de anexar e selecione o template novamente.', 'error', 6000);
+      return false;
+    }
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      candidates[0].files = transfer.files;
+      dispatchInputEvents(candidates[0]);
+      return true;
+    } catch {
+      showToast('Não foi possível anexar o arquivo à conversa. Tente novamente.', 'error', 5000);
+      return false;
+    }
+  }
+
   async function writeAndSendCommand(command, options) {
     const opts = options || {};
     const shouldAutoSend = opts.autoSend !== false;
@@ -5927,6 +6124,7 @@
         if (!confirmed) return false;
       }
 
+      if (typeof opts.prepareComposer === 'function' && !(await opts.prepareComposer(composer))) return false;
       setInputText(composer, command);
       composer.focus();
 
@@ -5972,24 +6170,15 @@
         /* ignore open composer failure */
       }
 
-      const maxAttempts = 25;
-      let attempts = 0;
-      const tryFillExpanded = () => {
-        attempts += 1;
+      for (let attempts = 0; attempts < 25; attempts += 1) {
+        await new Promise((resolve) => setTimeout(resolve, attempts ? 120 : 80));
         const expanded = findExpandedComposerInput();
         if (expanded && !isComposerLauncherInput(expanded)) {
-          void fillComposer(expanded, shouldAutoSend);
-          return;
+          return await fillComposer(expanded, shouldAutoSend);
         }
-        if (attempts < maxAttempts) {
-          setTimeout(tryFillExpanded, 120);
-          return;
-        }
-        showToast('Não foi possível abrir o campo de mensagem para inserir o comando.', 'error', 3200);
-      };
-
-      setTimeout(tryFillExpanded, 80);
-      return true;
+      }
+      showToast('Não foi possível abrir o campo de mensagem para inserir o comando.', 'error', 3200);
+      return false;
     }
 
     return await fillComposer(composer, shouldAutoSend);
