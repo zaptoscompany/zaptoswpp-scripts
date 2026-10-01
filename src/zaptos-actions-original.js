@@ -6,6 +6,7 @@
   if (window.__ZAPTOS_MESSAGE_ACTIONS_V1__) return;
   window.__ZAPTOS_MESSAGE_ACTIONS_V1__ = true;
 
+  const SCRIPT_VERSION = '2026.10.01.3';
   const DEBUG = false;
   const DETAILS_ACTION_ID = 'conv-message-reply-action-details';
   const MENU_ACTION_CLASS =
@@ -1763,7 +1764,25 @@
       .replace(/=+$/g, '');
   }
 
-  async function useOfficialTemplate(instanceName, template, parameters, mediaFile) {
+  function serializeTemplateParams(parameters) {
+    // Base64 oculta os merge fields da GHL. No formato ghl1, somente a
+    // estrutura é codificada; os valores ficam visíveis até o webhook de envio.
+    if (!/\{\{[^{}]+\}\}/.test(JSON.stringify(parameters))) {
+      return encodeTemplateParams(parameters);
+    }
+    const boundary = crypto.randomUUID().replace(/-/g, '');
+    const values = [];
+    const structure = JSON.parse(JSON.stringify(parameters, (_key, value) => {
+      if (typeof value !== 'string') return value;
+      values.push(value.replace(/\r\n?/g, '\n'));
+      return { $value: values.length - 1 };
+    }));
+    const separator = `\n--template-${boundary}--`;
+    return `ghl1:${boundary}:${encodeTemplateParams(structure)}\n` +
+      values.map((value) => value + separator).join('\n');
+  }
+
+  async function useOfficialTemplate(instanceName, template, parameters, mediaFile, workflowContext) {
     const safeInstanceName = readString(instanceName)
       .replace(/[\r\n]+/g, ' ')
       .replace(/\s+/g, ' ')
@@ -1785,8 +1804,9 @@
         showToast('Os parâmetros ultrapassam o limite permitido.', 'error', 3500);
         return false;
       }
-      const encoded = encodeTemplateParams(parameters);
-      if (!encoded || encoded.length > 16384) {
+      const encoded = serializeTemplateParams(parameters);
+      const maxLength = encoded.startsWith('ghl1:') ? 65536 : 16384;
+      if (!encoded || officialTemplateUtf8Length(encoded) > maxLength) {
         showToast('Os parâmetros ultrapassam o limite permitido.', 'error', 3500);
         return false;
       }
@@ -1794,12 +1814,20 @@
     }
     return await writeAndSendCommand(command, {
       autoSend: false,
+      ...(workflowContext ? {
+        composer: workflowContext.composer,
+        isComposerCurrent: () => findWorkflowSmsContext()?.composer === workflowContext.composer
+      } : {}),
       prepareComposer: (composer) => {
-        if (template.requiresMedia && !attachTemplateMedia(composer, mediaFile)) return false;
-        syncSwitchInstanceSelection(safeInstanceName);
+        if (template.requiresMedia && !attachTemplateMedia(composer, mediaFile, !workflowContext)) return false;
+        if (!workflowContext) syncSwitchInstanceSelection(safeInstanceName);
         return true;
       },
-      readyMessage: template.requiresMedia
+      readyMessage: workflowContext
+        ? (template.requiresMedia
+          ? 'Template preparado. Aguarde o upload do anexo e clique em Salvar ação.'
+          : 'Template pronto na mensagem do SMS. Clique em Salvar ação.')
+        : template.requiresMedia
         ? 'Template preparado. Aguarde o arquivo aparecer na conversa e clique em enviar.'
         : 'Template pronto no campo. Clique em enviar para concluir.'
     });
@@ -2489,6 +2517,12 @@
   function openOfficialTemplatePicker() {
     if (typeof templateState.activeClose === 'function') return;
 
+    const workflowContext = isWorkflowPage() ? findWorkflowSmsContext() : null;
+    if (isWorkflowPage() && !workflowContext) {
+      showToast('Abra o nó de SMS para inserir um template.', 'error', 3000);
+      return;
+    }
+
     const locationId = getCurrentLocationId();
     if (!locationId) {
       showToast('Não foi possível identificar a subconta atual.', 'error', 3000);
@@ -2689,7 +2723,10 @@
           ? validateTemplateMedia(selectedMediaFile, selectedTemplate.headerFormat) : '';
         if (useButton) useButton.disabled = !selectedTemplate.canUse || !result.ok || Boolean(mediaError);
         if (usageNote) {
-          const noteText = getTemplateUsageNote(selectedTemplate, result, selectedMediaFile);
+          let noteText = getTemplateUsageNote(selectedTemplate, result, selectedMediaFile);
+          if (workflowContext && selectedTemplate.requiresMedia && result.ok && !mediaError) {
+            noteText = 'O arquivo será anexado ao SMS. Aguarde o upload antes de salvar a ação.';
+          }
           usageNote.textContent = noteText;
           usageNote.hidden = !noteText;
         }
@@ -2716,7 +2753,7 @@
         parameterBox.className = 'za-template-parameter-box';
         const parameterInfo = document.createElement('p');
         parameterInfo.textContent =
-          'Preencha os parâmetros abaixo. Eles serão incluídos automaticamente no comando do template.';
+          'Preencha os parâmetros com texto ou variáveis da GHL, como {{contact.first_name}}. A GHL substitui as variáveis no envio.';
         const parameterGrid = document.createElement('div');
         parameterGrid.className = 'za-template-parameter-grid';
         for (const definition of parameterDefinitions) {
@@ -2903,7 +2940,8 @@
           selectedInstance,
           templateToUse,
           parameterResult.parameters,
-          mediaToUse
+          mediaToUse,
+          workflowContext
         );
       });
       previewPane.appendChild(useButton);
@@ -5051,6 +5089,71 @@
       });
   }
 
+  function isWorkflowPage() {
+    return /\/automation\/workflow\/[^/]+/i.test(location.pathname || '');
+  }
+
+  function findWorkflowSmsContext(requireComposer = true) {
+    if (!isWorkflowPage()) return null;
+    // O workflow pode manter uma cópia oculta do painel durante a transição.
+    const panels = Array.from(document.querySelectorAll('#action-configuration-panel[data-action-type="sms"]'));
+    const panel = panels.find((element) => isVisibleElement(element));
+    const aiButton = Array.from((panel || document).querySelectorAll('[id="pg-sms-ai__btn--build-ai"]'))
+      .find((button) => isVisibleElement(button));
+    if (!aiButton) return null;
+    const toolbar = aiButton.parentElement;
+    const context = { toolbar, beforeAnchor: aiButton, composer: null };
+    if (panel) {
+      const editors = Array.from(panel.querySelectorAll('.ghl-workflow-text-editor .tiptap[contenteditable="true"]'))
+        .filter((editor) => isVisibleElement(editor));
+      if (editors.length === 1) return { ...context, composer: editors[0] };
+      // O campo de URL de anexos também usa TipTap. Não é um compositor SMS.
+      return requireComposer ? null : context;
+    }
+    let scope = toolbar?.parentElement;
+    for (let depth = 0; scope && scope !== document.body && depth < 6; depth += 1) {
+      const candidates = Array.from(scope.querySelectorAll('textarea, [contenteditable="true"]'))
+        .filter((input) => isVisibleElement(input) && !input.disabled && !input.readOnly &&
+          !input.closest('.za-overlay') && !input.parentElement?.closest('[contenteditable="true"]'));
+      // Editores ricos podem manter um textarea auxiliar no mesmo contêiner.
+      const editables = candidates.filter((input) => input.getAttribute('contenteditable') === 'true');
+      const inputs = editables.length ? editables : candidates;
+      if (inputs.length === 1) return { ...context, composer: inputs[0] };
+      if (inputs.length > 1) break;
+      scope = scope.parentElement;
+    }
+    // Exibir o atalho não depende do editor já estar montado. Para escrever,
+    // continuamos exigindo um campo de mensagem identificado sem ambiguidade.
+    return requireComposer ? null : context;
+  }
+
+  function placeTemplateButton(wrapper, target) {
+    const button = wrapper.querySelector('button');
+    const workflow = Boolean(target.beforeAnchor);
+    wrapper.style.marginLeft = workflow ? 'auto' : '2px';
+    button.style.width = workflow ? 'auto' : '28px';
+    button.style.padding = workflow ? '0 8px' : '0';
+    let label = button.querySelector('span');
+    if (workflow && !label) {
+      label = document.createElement('span');
+      label.textContent = 'Templates';
+      label.style.marginLeft = '5px';
+      button.appendChild(label);
+    } else if (!workflow && label) label.remove();
+
+    if (target.beforeAnchor?.parentElement === target.toolbar) {
+      if (target.beforeAnchor.previousElementSibling !== wrapper) {
+        target.beforeAnchor.insertAdjacentElement('beforebegin', wrapper);
+      }
+    } else if (target.recorderWrapper?.parentElement === target.toolbar) {
+      if (target.recorderWrapper.nextElementSibling !== wrapper) {
+        target.recorderWrapper.insertAdjacentElement('afterend', wrapper);
+      }
+    } else if (wrapper.parentElement !== target.toolbar) {
+      target.toolbar.prepend(wrapper);
+    }
+  }
+
   function findTemplateBottomBar() {
     const bars = Array.from(
       document.querySelectorAll("div.flex.items-center.h-\\[40px\\]")
@@ -5110,17 +5213,14 @@
       return;
     }
 
-    const target = findTemplateToolbar();
-    if (!target?.toolbar) return;
+    const target = isWorkflowPage() ? findWorkflowSmsContext(false) : findTemplateToolbar();
+    if (!target?.toolbar) {
+      if (existingWrapper) existingWrapper.remove();
+      return;
+    }
 
     if (existingWrapper instanceof HTMLElement) {
-      if (target.recorderWrapper?.parentElement === target.toolbar) {
-        if (target.recorderWrapper.nextElementSibling !== existingWrapper) {
-          target.recorderWrapper.insertAdjacentElement('afterend', existingWrapper);
-        }
-      } else if (existingWrapper.parentElement !== target.toolbar) {
-        target.toolbar.prepend(existingWrapper);
-      }
+      placeTemplateButton(existingWrapper, target);
       return;
     }
 
@@ -5174,18 +5274,14 @@
     });
 
     wrapper.appendChild(button);
-    if (target.recorderWrapper?.parentElement === target.toolbar) {
-      target.recorderWrapper.insertAdjacentElement('afterend', wrapper);
-    } else {
-      target.toolbar.prepend(wrapper);
-    }
+    placeTemplateButton(wrapper, target);
   }
 
   function ensureWhatsAppActionsButton() {
     const locationId = getCurrentLocationId();
     const existingWrapper = document.getElementById(WHATSAPP_ACTIONS_WRAPPER_ID);
 
-    if (!locationId) {
+    if (!locationId || isWorkflowPage()) {
       if (existingWrapper) existingWrapper.remove();
       if (typeof whatsappActionsState.activeClose === 'function') {
         whatsappActionsState.activeClose();
@@ -6070,7 +6166,7 @@
     return findSendButtonInScope(document);
   }
 
-  function attachTemplateMedia(composer, file) {
+  function attachTemplateMedia(composer, file, allowGlobalFallback = true) {
     const acceptsFile = (input) => {
       if (input.disabled || input.closest('.za-overlay')) return false;
       const accept = readString(input.accept).toLowerCase();
@@ -6088,7 +6184,7 @@
       if (candidates.length) break;
     }
     // O GHL também pode montar o upload fora do contêiner do compositor.
-    if (!candidates.length) candidates = Array.from(document.querySelectorAll('input[type="file"]')).filter(acceptsFile);
+    if (!candidates.length && allowGlobalFallback) candidates = Array.from(document.querySelectorAll('input[type="file"]')).filter(acceptsFile);
     if (candidates.length !== 1) {
       showToast('Não foi possível localizar o anexo da conversa. Abra o botão de anexar e selecione o template novamente.', 'error', 6000);
       return false;
@@ -6113,6 +6209,12 @@
     const fillComposer = async (composer, autoSend) => {
       if (!composer) return false;
 
+      const isCurrent = () => typeof opts.isComposerCurrent !== 'function' || opts.isComposerCurrent();
+      if (!isCurrent()) {
+        showToast('O campo de mensagem mudou. Abra novamente o seletor de templates.', 'error', 3500);
+        return false;
+      }
+
       const currentValue = normalizeWhitespace(getInputText(composer));
       if (currentValue && currentValue !== normalizeWhitespace(command)) {
         const confirmed = await showModernConfirm({
@@ -6124,6 +6226,10 @@
         if (!confirmed) return false;
       }
 
+      if (!isCurrent()) {
+        showToast('O campo de mensagem mudou. Abra novamente o seletor de templates.', 'error', 3500);
+        return false;
+      }
       if (typeof opts.prepareComposer === 'function' && !(await opts.prepareComposer(composer))) return false;
       setInputText(composer, command);
       composer.focus();
@@ -6150,7 +6256,7 @@
       return true;
     };
 
-    const composer = resolveComposerInput();
+    const composer = opts.composer || resolveComposerInput();
     if (!composer) {
       showToast('Não encontrei o campo de mensagem para inserir o comando.', 'error', 3000);
       return false;
@@ -6483,6 +6589,7 @@
   setInterval(tick, CHECK_INTERVAL_MS);
 
   window._zaptosMessageActions = {
+    version: SCRIPT_VERSION,
     state,
     injectMenuActions,
     openOfficialTemplatePicker,

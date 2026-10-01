@@ -37,3 +37,48 @@ e [template com documento](https://www.postman.com/meta/whatsapp-business-platfo
 Validação local: `deno test --allow-read --allow-env tests/template-media.test.ts`.
 Os testes usam respostas simuladas; a aprovação real depende do ambiente publicado
 e da análise da Meta.
+
+## Variáveis da GHL nos templates e workflows
+
+Os parâmetros aceitam merge fields como `{{contact.first_name}}`, `{{contact.phone}}`
+e `{{ custom_values.calendar_link }}`. Quando há variáveis, o script gera
+`#templateparams:ghl1:...` com os valores em blocos de texto delimitados. Assim, a
+GHL pode substituí-los ao enviar a mensagem, inclusive em execuções futuras do
+workflow. Aspas e quebras de linha nos valores não precisam de escape JSON.
+Parâmetros fixos continuam usando o formato Base64URL anterior.
+Os novos blocos usam delimitadores neutros `--template-...--`. O receptor mantém
+compatibilidade com os delimitadores antigos para ações que já foram salvas.
+
+O receptor reconstrói e valida os parâmetros antes de interpretar outros comandos.
+Uma variável que chegar sem substituição gera `OFFICIAL_TEMPLATE_VARIABLE_UNRESOLVED`,
+em vez de ser entregue literalmente ao WhatsApp.
+
+Em `/automation/workflow/<id>`, o botão **Templates** aparece ao lado de **Escreva
+com AI** no nó SMS. **Usar template** preenche a mensagem desse nó; é necessário
+clicar em **Salvar ação** para persistir a alteração. O script não salva nem publica
+o workflow automaticamente.
+O atalho é montado pelo cabeçalho do SMS, mesmo enquanto o editor carrega. A escrita
+usa o TipTap de `.ghl-workflow-text-editor` no painel `[data-action-type="sms"]`,
+sem selecionar o editor de URL dos anexos.
+
+Publicação necessária, nesta ordem:
+
+1. Atualize a função receptora com `ghl_in-redis.ts` do repositório
+   `zaptoswppSupabase`, incluindo `prepareOfficialTemplateTransport`.
+2. Atualize o script do CRM; as versões minificada/ofuscada são geradas por
+   `src/build-zaptos-actions-criptografado.ps1`. O build também atualiza
+   `src/zaptos-actions.js` com a mesma versão ofuscada. Se o código estiver colado
+   diretamente no JavaScript personalizado da GHL, substitua esse conteúdo.
+3. Gere novamente os comandos de templates que já tinham variáveis escondidas
+   em Base64 e salve as respectivas ações. Comandos antigos não são migrados
+   automaticamente.
+
+Validação do frontend: `deno test --allow-read --allow-env tests/template-media.test.ts tests/template-ghl.test.ts`.
+No repositório do receptor: `node --test tools/official-template-ghl.test.mjs`.
+Os testes simulam a substituição da GHL e o DOM do editor; o envio real deve ser
+verificado no CRM após a publicação dos dois arquivos.
+
+Após atualizar o script, recarregue a página para encerrar a instância anterior.
+No Console, `window._zaptosMessageActions.version` deve retornar `2026.10.01.3`.
+Os testes verificam o botão de SMS nas quatro distribuições, incluindo
+`zaptos-actions.js`, para evitar que esse arquivo fique numa versão antiga.
