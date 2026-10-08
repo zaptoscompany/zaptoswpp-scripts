@@ -79,6 +79,28 @@ Os testes simulam a substituição da GHL e o DOM do editor; o envio real deve s
 verificado no CRM após a publicação dos dois arquivos.
 
 Após atualizar o script, recarregue a página para encerrar a instância anterior.
-No Console, `window._zaptosMessageActions.version` deve retornar `2026.10.01.3`.
+No Console, `window._zaptosMessageActions.version` deve retornar `2026.10.07.2`.
 Os testes verificam o botão de SMS nas quatro distribuições, incluindo
 `zaptos-actions.js`, para evitar que esse arquivo fique numa versão antiga.
+
+
+## Botões de link e opções de menu
+
+O gerador mantém botões de resposta, URL, ligação e cópia em `#send:menu`.
+As opções são transportadas em `#choices:["Texto|destino", ...]` para preservar
+vírgulas, aspas e barras. Carrossel só é gerado pela ação **Enviar carrossel**.
+
+Esta versão exige publicar primeiro o receptor `zaptoswppSupabase/ghl_in-redis.ts`
+atualizado, que aceita `#choices` em JSON e continua lendo comandos antigos com
+`#select`. Depois, atualize o script carregado no CRM e gere novamente os comandos
+de menu afetados; ações salvas anteriormente não são alteradas automaticamente.
+
+Na API não oficial, URLs, `call:` e `copy:` seguem o formato de `/send/menu`.
+No receptor oficial, um único link é convertido em `interactive.type: cta_url`;
+botões de resposta continuam limitados a três. Misturar link com respostas ou
+usar ligação/cópia nesse menu oficial gera erro explícito; use templates para
+os tipos de botão que exigem esse formato.
+
+Teste de integração sem envio real (Node 24+, com o checkout `zaptoswppSupabase`
+ao lado deste repositório): `node --test tests/menu-actions.test.mjs`.
+Para outro caminho, configure `ZAPTOS_RECEIVER_SOURCE` com o arquivo `ghl_in-redis.ts`.

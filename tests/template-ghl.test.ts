@@ -15,10 +15,10 @@ function setup(html = '', url = workflowUrl) {
     Element: window.Element, HTMLElement: window.HTMLElement,
     HTMLInputElement: window.HTMLInputElement, HTMLTextAreaElement: window.HTMLTextAreaElement,
     HTMLSelectElement: window.HTMLSelectElement, Event: window.Event,
-    TextEncoder, crypto, btoa, setTimeout, clearTimeout
+    TextEncoder, URL, crypto, btoa, setTimeout, clearTimeout
   };
   vm.runInNewContext(source.slice(0, source.lastIndexOf("  document.addEventListener('pointerdown'")) + `
-    window.test = { serializeTemplateParams, useOfficialTemplate, findWorkflowSmsContext,
+    window.test = { getWhatsAppActionCatalog, setupMenuActionEditor, createFormControl, serializeTemplateParams, useOfficialTemplate, findWorkflowSmsContext,
       ensureTemplateButton, ensureWhatsAppActionsButton, writeAndSendCommand,
       setWriter: (fn) => { writeAndSendCommand = fn; },
       setConfirm: (fn) => { showModernConfirm = fn; } };
@@ -232,11 +232,58 @@ Deno.test('all published distributions initialize the supplied SMS panel with th
       assert.equal(window.document.querySelectorAll('#zaptos-waba-template-btn').length, 1, file);
       assert.equal(window.document.getElementById('pg-sms-ai__btn--build-ai').previousElementSibling.id, 'zaptos-waba-template-wrapper', file);
       assert.equal(typeof (window as any)._zaptosMessageActions.openOfficialTemplatePicker, 'function', file);
-      assert.equal((window as any)._zaptosMessageActions.version, '2026.10.01.3', file);
+      assert.equal((window as any)._zaptosMessageActions.version, '2026.10.07.2', file);
       assert.deepEqual(errors, [], file);
     } finally {
       observers.forEach((observer) => observer.disconnect());
       window.close();
     }
+  }
+});
+
+Deno.test('menu editor switches all button actions without changing the selected menu type', () => {
+  const { api, dom, document, window } = setup();
+  const menu = api.getWhatsAppActionCatalog([]).find((item: any) => item.id === 'send_menu');
+  const controls: Record<string, any> = {};
+  const wrappers: Record<string, any> = {};
+  for (const field of menu.fields) {
+    const control = api.createFormControl(field);
+    controls[field.key] = control.input;
+    wrappers[field.key] = control.wrapper;
+    document.body.append(control.wrapper);
+  }
+  const host = document.createElement('div');
+  document.body.append(host);
+  controls.type.value = 'button';
+  const cleanup = api.setupMenuActionEditor({ controls, wrappers, host, update: () => {} });
+  try {
+    for (const [action, value, expected] of [
+      ['URL', 'https://example.com', 'https://example.com'],
+      ['CALL', '+55 (11) 99999-9999', 'call:+5511999999999'],
+      ['COPY', 'CUPOM10', 'copy:CUPOM10'],
+      ['REPLY', 'sim', 'sim'],
+    ]) {
+      const select = host.querySelector('select')!;
+      select.value = action;
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      const inputs = host.querySelectorAll('.za-builder-grid input');
+      (inputs[0] as any).value = 'Ação';
+      inputs[0].dispatchEvent(new window.Event('input', { bubbles: true }));
+      (inputs[1] as any).value = value;
+      inputs[1].dispatchEvent(new window.Event('input', { bubbles: true }));
+      assert.equal(controls.type.value, 'button');
+      const command = menu.build({ type: controls.type.value, text: 'Escolha', menu_items: controls.menu_items.value });
+      assert.match(command, /^#send:menu\n/);
+      const choices = JSON.parse(command.split('\n').find((line: string) => line.startsWith('#choices:')).slice(9));
+      assert.deepEqual(choices, [`Ação|${expected}`]);
+    }
+    controls.type.value = 'list';
+    controls.type.dispatchEvent(new window.Event('change'));
+    controls.type.value = 'button';
+    controls.type.dispatchEvent(new window.Event('change'));
+    assert.equal(JSON.parse(controls.menu_items.value)[0].value, 'sim');
+  } finally {
+    cleanup();
+    dom.window.close();
   }
 });

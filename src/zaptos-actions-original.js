@@ -6,7 +6,7 @@
   if (window.__ZAPTOS_MESSAGE_ACTIONS_V1__) return;
   window.__ZAPTOS_MESSAGE_ACTIONS_V1__ = true;
 
-  const SCRIPT_VERSION = '2026.10.01.3';
+  const SCRIPT_VERSION = '2026.10.07.2';
   const DEBUG = false;
   const DETAILS_ACTION_ID = 'conv-message-reply-action-details';
   const MENU_ACTION_CLASS =
@@ -3236,6 +3236,40 @@
     return cleanActionLine(value).replace(/\|/g, ' ');
   }
 
+  function normalizeActionButton(button, index, context = 'Botão') {
+    const label = cleanActionLine(button?.label);
+    const type = readString(button?.action || button?.type).toUpperCase() || 'REPLY';
+    let value = cleanActionLine(button?.value);
+    const prefix = `${context} ${index + 1}`;
+    if (!label) throw new Error(`${prefix}: informe o texto.`);
+    if (!['REPLY', 'URL', 'CALL', 'COPY'].includes(type)) {
+      throw new Error(`${prefix}: escolha uma ação válida.`);
+    }
+    if (!value && type === 'REPLY') value = makeActionId(label, `opcao_${index + 1}`);
+    if (!value) throw new Error(`${prefix}: preencha o destino.`);
+    if (label.includes('|') || value.includes('|')) {
+      throw new Error(`${prefix}: o caractere | é reservado; remova-o do texto ou destino.`);
+    }
+    if (type === 'URL') {
+      try {
+        const url = new URL(value);
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
+      } catch {
+        throw new Error(`${prefix}: informe uma URL completa.`);
+      }
+    }
+    if (type === 'CALL') {
+      value = value.replace(/[\s().-]/g, '');
+      if (!/^\+?\d{8,15}$/.test(value)) {
+        throw new Error(`${prefix}: informe um telefone válido com DDI e DDD.`);
+      }
+    }
+    if (type === 'REPLY' && /^(?:https?:|url:|call:|copy:)/i.test(value)) {
+      throw new Error(`${prefix}: use um ID de resposta sem prefixo de link, ligação ou cópia.`);
+    }
+    return { label, type, value };
+  }
+
   function makeActionId(value, fallback) {
     const normalized = readString(value)
       .normalize('NFD')
@@ -3509,7 +3543,7 @@
         category: 'Interativos',
         title: 'Enviar menu, lista ou enquete',
         description: 'Cria botões, lista ou enquete com campos que mudam conforme o tipo escolhido.',
-        usage: '#send:menu + #type + #select',
+        usage: '#send:menu + #type + #choices',
         customEditor: 'menu',
         fields: [
           select('type', 'Tipo', [
@@ -3525,7 +3559,18 @@
           field('number', 'Número de destino (opcional)', { placeholder: '5511999999999' })
         ],
         build: (values) => {
+          values = { ...values, type: values.type || 'button' };
+          if (!['button', 'list', 'poll'].includes(values.type)) throw new Error('Escolha um tipo de menu válido.');
           const choices = parseActionJsonArray(values.menu_items);
+          const limit = values.type === 'poll' ? 12 : 10;
+          if (choices.length > limit) throw new Error(`Use no máximo ${limit} opções.`);
+          if (values.type === 'poll') {
+            const count = readString(values.selectablecount) ? Number(values.selectablecount) : 1;
+            if (!Number.isInteger(count) || count < 1 || count > choices.length) {
+              throw new Error('A quantidade selecionável deve estar entre 1 e o total de opções.');
+            }
+            values.selectablecount = String(count);
+          }
           if (!choices.length) throw new Error('Adicione pelo menos uma opção.');
           if (values.type === 'list' && !readString(values.listbutton)) {
             throw new Error('Informe o texto do botão da lista.');
@@ -3537,43 +3582,8 @@
             requireActionValue(values, 'title', 'a pergunta da enquete');
           }
 
-          if (values.type === 'button') {
-            if (choices.length > 10) throw new Error('Use no máximo 10 botões.');
-            const hasCallToAction = choices.some((choice) =>
-              ['URL', 'CALL', 'COPY'].includes(readString(choice?.action).toUpperCase())
-            );
-            if (hasCallToAction) {
-              const cardText = cleanActionSegment(
-                values.text || values.title || 'Escolha uma opção'
-              );
-              const buttons = choices.map((choice, index) => {
-                const label = cleanActionSegment(choice?.label);
-                const type = readString(choice?.action).toUpperCase() || 'REPLY';
-                const value = cleanActionSegment(
-                  choice?.value || (type === 'REPLY' ? makeActionId(label, `opcao_${index + 1}`) : '')
-                );
-                if (!label || !value) {
-                  throw new Error(`Botão ${index + 1}: preencha o texto e o destino.`);
-                }
-                if (!['REPLY', 'URL', 'CALL', 'COPY'].includes(type)) {
-                  throw new Error(`Botão ${index + 1}: escolha uma ação válida.`);
-                }
-                if (type === 'URL' && !/^https?:\/\//i.test(value)) {
-                  throw new Error(`Botão ${index + 1}: informe uma URL completa.`);
-                }
-                if (type === 'CALL' && value.replace(/\D/g, '').length < 8) {
-                  throw new Error(`Botão ${index + 1}: informe um telefone válido.`);
-                }
-                return actionDirective('button', [label, value, type].join('|'));
-              });
-              return composeActionCommand(
-                '#send:carousel',
-                numberLine(values),
-                actionDirective('text', values.title || values.text, true),
-                actionDirective('card', `${cardText}|||`),
-                buttons
-              );
-            }
+          if (values.type === 'button' && choices.length > 10) {
+            throw new Error('Use no máximo 10 botões.');
           }
 
           const choiceDirectives = [];
@@ -3583,16 +3593,18 @@
             if (values.type === 'list') {
               const id = cleanActionSegment(choice?.value) || makeActionId(label, `opcao_${index + 1}`);
               const description = cleanActionSegment(choice?.description);
-              const section = cleanActionSegment(choice?.section);
-              if (section && section !== cleanActionSegment(choices[index - 1]?.section)) {
-                choiceDirectives.push(actionDirective('select', `[${section}]`));
+              const section = cleanActionSegment(choice?.section) || 'Opções';
+              if (section && section !== (index ? cleanActionSegment(choices[index - 1]?.section) || 'Opções' : '')) {
+                choiceDirectives.push(`[${section}]`);
               }
-              choiceDirectives.push(actionDirective('select', [label, id, description].join('|')));
+              choiceDirectives.push([label, id, description].join('|'));
             } else if (values.type === 'button') {
-              const id = cleanActionSegment(choice?.value) || makeActionId(label, `opcao_${index + 1}`);
-              choiceDirectives.push(actionDirective('select', `${label}|${id}`));
+              const { type, value } = normalizeActionButton(choice, index);
+              const destination = type === 'CALL' ? `call:${value}` :
+                type === 'COPY' ? `copy:${value}` : value;
+              choiceDirectives.push(`${label}|${destination}`);
             } else {
-              choiceDirectives.push(actionDirective('select', label));
+              choiceDirectives.push(label);
             }
           }
           return composeActionCommand(
@@ -3603,7 +3615,7 @@
             values.type === 'poll'
               ? ''
               : actionDirective('text', requireActionValue(values, 'text', 'a mensagem'), true),
-            choiceDirectives,
+            `#choices:${JSON.stringify(choiceDirectives)}`,
             values.type === 'poll' ? '' : actionDirective('footer', values.footer),
             values.type === 'list' ? actionDirective('listbutton', values.listbutton) : '',
             values.type === 'poll' ? actionDirective('selectablecount', values.selectablecount) : ''
@@ -3614,7 +3626,7 @@
           const optionLabels = parseActionJsonArray(values.menu_items)
             .map((choice) => readString(choice?.label))
             .filter(Boolean)
-            .slice(0, 10);
+            .slice(0, type === 'poll' ? 12 : 10);
           if (type === 'list') {
             return {
               kind: 'list',
@@ -3671,26 +3683,10 @@
             if (media && !/^https?:\/\//i.test(media)) {
               throw new Error(`Card ${index + 1}: informe uma URL de mídia completa.`);
             }
-            directives.push(actionDirective('card', [text, media, mediaType, filename].join('|')));
+            directives.push(actionDirective('card', [text, media, mediaType, filename].join('|'), true));
             for (const [buttonIndex, button] of cardButtons.entries()) {
-              const label = cleanActionSegment(button?.label);
-              const type = readString(button?.type).toUpperCase() || 'REPLY';
-              const value = cleanActionSegment(
-                button?.value || (type === 'REPLY' ? makeActionId(label, `botao_${buttonIndex + 1}`) : '')
-              );
-              if (!label || !value) {
-                throw new Error(`Card ${index + 1}, botão ${buttonIndex + 1}: preencha texto e destino.`);
-              }
-              if (!['REPLY', 'URL', 'CALL', 'COPY'].includes(type)) {
-                throw new Error(`Card ${index + 1}, botão ${buttonIndex + 1}: escolha uma ação válida.`);
-              }
-              if (type === 'URL' && !/^https?:\/\//i.test(value)) {
-                throw new Error(`Card ${index + 1}, botão ${buttonIndex + 1}: informe uma URL completa.`);
-              }
-              if (type === 'CALL' && value.replace(/\D/g, '').length < 8) {
-                throw new Error(`Card ${index + 1}, botão ${buttonIndex + 1}: informe um telefone válido.`);
-              }
-              directives.push(actionDirective('button', [label, value, type].join('|')));
+              const { label, type, value } = normalizeActionButton(button, buttonIndex, `Card ${index + 1}, botão`);
+              directives.push(actionDirective('button', [label, value, type].join('|'), true));
             }
           }
           return composeActionCommand(
@@ -4587,7 +4583,7 @@
               { value: 'CALL', label: 'Ligar para um telefone' },
               { value: 'COPY', label: 'Copiar um código' }
             ],
-            help: 'Até 10 botões. Links, ligações e cópia usam carrossel; na API Oficial, respostas simples continuam limitadas a 3 pelo WhatsApp.'
+            help: 'Não oficial: até 10 botões. Oficial: até 3 respostas ou um único link, sem misturar ações. Ligações e cópia exigem template na Oficial.'
           });
           const labels = {
             REPLY: ['ID da resposta (opcional)', 'saiba_mais'],
