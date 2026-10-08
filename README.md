@@ -79,7 +79,7 @@ Os testes simulam a substituição da GHL e o DOM do editor; o envio real deve s
 verificado no CRM após a publicação dos dois arquivos.
 
 Após atualizar o script, recarregue a página para encerrar a instância anterior.
-No Console, `window._zaptosMessageActions.version` deve retornar `2026.10.07.2`.
+No Console, `window._zaptosMessageActions.version` deve retornar `2026.10.08.1`.
 Os testes verificam o botão de SMS nas quatro distribuições, incluindo
 `zaptos-actions.js`, para evitar que esse arquivo fique numa versão antiga.
 
@@ -94,6 +94,13 @@ Esta versão exige publicar primeiro o receptor `zaptoswppSupabase/ghl_in-redis.
 atualizado, que aceita `#choices` em JSON e continua lendo comandos antigos com
 `#select`. Depois, atualize o script carregado no CRM e gere novamente os comandos
 de menu afetados; ações salvas anteriormente não são alteradas automaticamente.
+
+O campo **API da instância que fará o envio** começa em Oficial. Ele valida
+as combinações antes de habilitar copiar, inserir ou enviar: no modo Oficial,
+recusa múltiplos links, link misturado com resposta, ligação/cópia e enquete.
+Essa seleção não altera a instância de destino; para uma instância Não oficial,
+selecione explicitamente esse modo. Comandos digitados à mão continuam sendo
+validados pelo receptor, com orientação específica em caso de combinação inválida.
 
 Na API não oficial, URLs, `call:` e `copy:` seguem o formato de `/send/menu`.
 No receptor oficial, um único link é convertido em `interactive.type: cta_url`;

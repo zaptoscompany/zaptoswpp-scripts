@@ -6,7 +6,7 @@
   if (window.__ZAPTOS_MESSAGE_ACTIONS_V1__) return;
   window.__ZAPTOS_MESSAGE_ACTIONS_V1__ = true;
 
-  const SCRIPT_VERSION = '2026.10.07.2';
+  const SCRIPT_VERSION = '2026.10.08.1';
   const DEBUG = false;
   const DETAILS_ACTION_ID = 'conv-message-reply-action-details';
   const MENU_ACTION_CLASS =
@@ -3546,11 +3546,19 @@
         usage: '#send:menu + #type + #choices',
         customEditor: 'menu',
         fields: [
+          select('menu_api', 'API da instância que fará o envio', [
+            { value: 'official', label: 'API Oficial' },
+            { value: 'unofficial', label: 'API Não oficial' }
+          ], {
+            value: 'official',
+            help: 'Valida as opções para a API escolhida. Não troca a instância da conversa; use a API correspondente à instância de destino.',
+            full: true
+          }),
           select('type', 'Tipo', [
             { value: 'button', label: 'Botões' },
             { value: 'list', label: 'Lista' },
             { value: 'poll', label: 'Enquete' }
-          ]),
+          ], { value: 'button' }),
           field('title', 'Título (opcional)'),
           field('text', 'Mensagem', { type: 'textarea', rows: 3, required: true, full: true }),
           field('footer', 'Rodapé (opcional)'),
@@ -3582,8 +3590,20 @@
             requireActionValue(values, 'title', 'a pergunta da enquete');
           }
 
-          if (values.type === 'button' && choices.length > 10) {
-            throw new Error('Use no máximo 10 botões.');
+          if ((values.menu_api || 'official') === 'official') {
+            if (values.type === 'poll') {
+              throw new Error('Enquetes deste menu exigem uma instância Não oficial.');
+            }
+            if (values.type === 'button') {
+              const buttons = choices.map((choice, index) => normalizeActionButton(choice, index));
+              if (buttons.some((button) => ['CALL', 'COPY'].includes(button.type))) {
+                throw new Error('Na API Oficial, ligação e cópia precisam de um template aprovado compatível. Use Templates ou uma instância Não oficial.');
+              }
+              if (buttons.some((button) => button.type === 'URL') && buttons.length !== 1) {
+                throw new Error('Na API Oficial, este menu aceita apenas um botão de link, sem outros botões. Para mais links, use um template aprovado compatível ou mensagens separadas.');
+              }
+              if (buttons.length > 3) throw new Error('Na API Oficial, use no máximo 3 botões de resposta.');
+            }
           }
 
           const choiceDirectives = [];

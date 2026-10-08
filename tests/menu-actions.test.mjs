@@ -20,7 +20,8 @@ const names = ['normalizeOptionalString', 'normalizeBoolean', 'isHttpUrl', 'deco
   'canonicalizeUazDirectPayload', 'applyCanonicalString', 'applyCanonicalNumber', 'applyUazCommonAliases',
   'normalizeUazMentions', 'officialSendMenu', 'slugifyListRowId', 'ensureUniqueListRowId',
   'buildListSectionsFromChoices', 'buildCarouselCardsFromDirectives', 'splitDirectivePipe',
-  'inferCarouselButtonType', 'normalizeCarouselButtonId', 'attachCarouselMedia'];
+  'buildSendFailureSystemMessage', 'formatSystemMessageWithInstance', 'formatWaMessagesLimitsDiagnostics',
+  'mapSendFailureReason', 'isNoWhatsappErrorText', 'inferCarouselButtonType', 'normalizeCarouselButtonId', 'attachCarouselMedia'];
 const receiver = vm.createContext({ URL, console, officialSendMessage: async (_inst, _number, payload) => payload });
 const functions = names.map((name) => {
   const match = receiverJS.match(new RegExp(`(?:async )?function ${name}\\(`));
@@ -30,7 +31,7 @@ const functions = names.map((name) => {
 vm.runInContext(receiverJS.match(/^const UAZ_\w+_TYPES = .*$/gm).join('\n') + '\n' + functions, receiver);
 const plain = (value) => JSON.parse(JSON.stringify(value));
 function build(items, extra = {}) {
-  return menu.build({ type: 'button', title: 'Título', text: 'Olá\nEscolha', footer: 'Rodapé',
+  return menu.build({ menu_api: 'unofficial', type: 'button', title: 'Título', text: 'Olá\nEscolha', footer: 'Rodapé',
     number: '5511999999999', menu_items: JSON.stringify(items), ...extra });
 }
 function parse(command) {
@@ -68,7 +69,7 @@ test('nonofficial mixed actions retain destinations, commas, quotes and backslas
   ]));
   assert.deepEqual(payload.choices, ['Sim, aceito|sim', 'Site|https://example.com',
     'Ligar|call:+5511999999999', 'Copiar|copy:D\'água "10", C:\\novo']);
-  await assert.rejects(official(payload), /OFFICIAL_MENU_TYPE_NOT_SUPPORTED/);
+  await assert.rejects(official(payload), /OFFICIAL_MENU_URL_COMBINATION_NOT_SUPPORTED|OFFICIAL_MENU_TEMPLATE_REQUIRED/);
 });
 
 test('reply buttons work officially, with limit enforced', async () => {
@@ -171,3 +172,58 @@ test('explicit carousel supports all actions and preserves backslashes and empty
   assert.equal(payload.carousel[1].document, 'https://example.com/file');
   assert.equal(payload.carousel[1].filename, 'guia.pdf');
 });
+
+test('two links reproduce the reported rejection and now explain how to fix it', async () => {
+  const items = [
+    { label: 'asdasdas', action: 'URL', value: 'https://app.zaptos.com.br/?category=team-inbox&tab=starred' },
+    { label: 'asdasdasdas', action: 'URL', value: 'https://app.zaptos.com.br/?category=team-inbox&tab=starred' },
+  ];
+  assert.throws(() => build(items, { menu_api: 'official' }), /apenas um botão de link/);
+  assert.throws(() => build(items, { menu_api: '' }), /apenas um botão de link/);
+  const payload = parse(build(items));
+  try {
+    await official(payload);
+    assert.fail('Expected two URL buttons to be rejected');
+  } catch (error) {
+    const reason = receiver.mapSendFailureReason(error.message);
+    assert.match(reason, /one URL button/);
+    assert.match(reason, /approved template or separate messages/);
+    assert.doesNotMatch(reason, /This message type is not supported/);
+  }
+  const single = parse(build(items.slice(0, 1), { menu_api: 'official' }));
+  assert.equal((await official(single)).interactive.type, 'cta_url');
+});
+
+test('official builder rejects mixed actions, calls, copy, excess replies and polls before generating commands', () => {
+  for (const action of ['CALL', 'COPY']) {
+    assert.throws(() => build([{ label: 'Ação', action, value: '+5511999999999' }], { menu_api: 'official' }), /template aprovado/);
+  }
+  assert.throws(() => build([{ label: 'Site', action: 'URL', value: 'https://example.com' }, { label: 'Sim' }],
+    { menu_api: 'official' }), /apenas um botão de link/);
+  assert.throws(() => build(Array.from({ length: 4 }, (_, i) => ({ label: `Resposta ${i}` })),
+    { menu_api: 'official' }), /máximo 3/);
+  assert.throws(() => build([{ label: 'Sim' }, { label: 'Não' }],
+    { menu_api: 'official', type: 'poll' }), /Não oficial/);
+  assert.match(receiver.mapSendFailureReason('OFFICIAL_MENU_TEMPLATE_REQUIRED'), /compatible message template approved by Meta/);
+});
+
+
+for (const destination of ['call:+5522999911349', 'copy:zcxzxczxczxzcx']) {
+  test(`System explains the approved-template requirement for ${destination.split(':')[0]}`, async () => {
+    let failure;
+    try {
+      await official({ type: 'button', text: 'Teste', choices: [`Ação|${destination}`] });
+    } catch (error) {
+      failure = error.message;
+    }
+    assert.equal(failure, 'OFFICIAL_MENU_TEMPLATE_REQUIRED');
+    const message = receiver.buildSendFailureSystemMessage({
+      errorText: failure, instanceName: 'Diego Cruz - Zaptos Company',
+    });
+    assert.match(message, /^\[System\]: Diego Cruz - Zaptos Company - /);
+    assert.match(message, /phone call and copy code buttons require a compatible message template approved by Meta/);
+    assert.match(message, /send it using the Templates selector/);
+    assert.match(message, /call: and copy: commands in #send:menu are only supported on the unofficial API/);
+    assert.doesNotMatch(message, /This message type is not supported/);
+  });
+}

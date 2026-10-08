@@ -232,7 +232,7 @@ Deno.test('all published distributions initialize the supplied SMS panel with th
       assert.equal(window.document.querySelectorAll('#zaptos-waba-template-btn').length, 1, file);
       assert.equal(window.document.getElementById('pg-sms-ai__btn--build-ai').previousElementSibling.id, 'zaptos-waba-template-wrapper', file);
       assert.equal(typeof (window as any)._zaptosMessageActions.openOfficialTemplatePicker, 'function', file);
-      assert.equal((window as any)._zaptosMessageActions.version, '2026.10.07.2', file);
+      assert.equal((window as any)._zaptosMessageActions.version, '2026.10.08.1', file);
       assert.deepEqual(errors, [], file);
     } finally {
       observers.forEach((observer) => observer.disconnect());
@@ -272,7 +272,7 @@ Deno.test('menu editor switches all button actions without changing the selected
       (inputs[1] as any).value = value;
       inputs[1].dispatchEvent(new window.Event('input', { bubbles: true }));
       assert.equal(controls.type.value, 'button');
-      const command = menu.build({ type: controls.type.value, text: 'Escolha', menu_items: controls.menu_items.value });
+      const command = menu.build({ menu_api: 'unofficial', type: controls.type.value, text: 'Escolha', menu_items: controls.menu_items.value });
       assert.match(command, /^#send:menu\n/);
       const choices = JSON.parse(command.split('\n').find((line: string) => line.startsWith('#choices:')).slice(9));
       assert.deepEqual(choices, [`Ação|${expected}`]);
