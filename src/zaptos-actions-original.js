@@ -6,7 +6,7 @@
   if (window.__ZAPTOS_MESSAGE_ACTIONS_V1__) return;
   window.__ZAPTOS_MESSAGE_ACTIONS_V1__ = true;
 
-  const SCRIPT_VERSION = '2026.10.08.1';
+  const SCRIPT_VERSION = '2026.10.08.2';
   const DEBUG = false;
   const DETAILS_ACTION_ID = 'conv-message-reply-action-details';
   const MENU_ACTION_CLASS =
@@ -654,6 +654,21 @@
         font-size: 12px;
         font-weight: 700;
       }
+      .za-template-buttons-editor {
+        margin: 0;
+        padding: 12px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+      }
+      .za-template-button-card {
+        display: grid;
+        gap: 10px;
+        margin: 12px 0;
+        padding: 12px;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+      }
+      .za-template-button-card > strong { font-size: 12px; color: #334155; }
       .za-template-example-list {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1902,43 +1917,36 @@
     return rendered;
   }
 
-  function parseTemplateButtonLines(text) {
+  function buildTemplateButtons(items) {
     const buttons = [];
     const errors = [];
-    for (const [index, rawLine] of String(text || '').split(/\r?\n/).entries()) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const parts = line.split('|').map((part) => part.trim());
-      const label = parts[0];
-      const type = readString(parts[1]).toUpperCase();
-      if (!label || !['QUICK_REPLY', 'URL', 'PHONE_NUMBER'].includes(type)) {
-        errors.push(`Botao ${index + 1}: use Texto|QUICK_REPLY, Texto|URL|https://... ou Texto|PHONE_NUMBER|+55...`);
-        continue;
-      }
+    if (items.length > 10) errors.push('Use no máximo 10 botões.');
+    items.forEach((item, index) => {
+      const text = readString(item.text);
+      const type = item.type;
+      const fail = (message) => errors.push(`Botão ${index + 1}: ${message}`);
+      if (!text || text.length > 25) fail('preencha o texto com até 25 caracteres.');
       if (type === 'QUICK_REPLY') {
-        buttons.push({ type, text: label });
+        buttons.push({ type, text });
       } else if (type === 'URL') {
-        const url = parts[2] || '';
-        const example = parts[3] || '';
-        if (!/^https:\/\//i.test(url)) {
-          errors.push(`Botao ${index + 1}: informe uma URL HTTPS.`);
-          continue;
+        const base = readString(item.url);
+        const url = base + (item.dynamic ? '{{1}}' : '');
+        try {
+          if (new URL(base).protocol !== 'https:' || /[{}\s]/.test(base)) throw new Error();
+        } catch {
+          fail('informe um endereço completo começando com https://.');
         }
-        if (/\{\{\s*1\s*\}\}/.test(url) && !example) {
-          errors.push(`Botão ${index + 1}: informe um exemplo para a URL dinâmica.`);
-          continue;
-        }
-        buttons.push({ type, text: label, url, example });
+        const example = readString(item.example);
+        if (item.dynamic && !example) fail('preencha um exemplo da parte personalizada do link.');
+        buttons.push({ type, text, url, ...(item.dynamic ? { example } : {}) });
+      } else if (type === 'PHONE_NUMBER') {
+        const phone_number = readString(item.phone_number).replace(/[^\d+]/g, '');
+        if (!/^\+?\d{8,20}$/.test(phone_number)) fail('informe um telefone com código do país e DDD.');
+        buttons.push({ type, text, phone_number });
       } else {
-        const phoneNumber = parts[2] || '';
-        if (!/^\+?\d{8,20}$/.test(phoneNumber.replace(/[^\d+]/g, ''))) {
-          errors.push(`Botão ${index + 1}: informe um telefone válido.`);
-          continue;
-        }
-        buttons.push({ type, text: label, phone_number: phoneNumber });
+        fail('selecione uma ação.');
       }
-    }
-    if (buttons.length > 10) errors.push('Use no máximo 10 botões.');
+    });
     return { buttons, errors };
   }
 
@@ -2189,7 +2197,7 @@
       full: true,
       required: true,
       maxLength: 1024,
-      placeholder: 'Olá {{1}}, seu pedido {{2}} foi confirmado.'
+      placeholder: 'Olá! Seu pedido foi confirmado.'
     });
     const footerField = createFormControl({
       label: 'Rodapé (opcional)',
@@ -2197,15 +2205,113 @@
       maxLength: 60,
       placeholder: 'Equipe de atendimento'
     });
-    const buttonsField = createFormControl({
-      label: 'Botões (opcional)',
-      type: 'textarea',
-      rows: 4,
-      full: true,
-      placeholder:
-        'Falar com suporte|QUICK_REPLY\nAcompanhar pedido|URL|https://exemplo.com/pedido\nLigar|PHONE_NUMBER|+5511999999999',
-      help: 'Um por linha. URL dinâmica: Texto|URL|https://site.com/{{1}}|exemplo123'
+    const buttonItems = [];
+    const buttonsField = { wrapper: document.createElement('fieldset') };
+    buttonsField.wrapper.className = 'za-form-field full za-template-buttons-editor';
+    const buttonsTitle = document.createElement('legend');
+    buttonsTitle.className = 'za-label';
+    buttonsTitle.textContent = 'Botões (opcional)';
+    const buttonsHelp = document.createElement('p');
+    buttonsHelp.className = 'za-form-help';
+    buttonsHelp.textContent = 'Adicione um botão, escolha o que acontece ao tocar nele e preencha os campos. A ordem abaixo será usada na mensagem.';
+    const buttonList = document.createElement('div');
+    const addButton = document.createElement('button');
+    addButton.type = 'button';
+    addButton.className = 'za-btn';
+    addButton.textContent = 'Adicionar botão';
+    buttonsField.wrapper.append(buttonsTitle, buttonsHelp, buttonList, addButton);
+
+    const renderButtonEditor = () => {
+      buttonList.replaceChildren();
+      addButton.disabled = buttonItems.length >= 10;
+      buttonItems.forEach((item, index) => {
+        const card = document.createElement('div');
+        card.className = 'za-template-button-card';
+        const title = document.createElement('strong');
+        title.textContent = `Botão ${index + 1}`;
+        const fields = document.createElement('div');
+        fields.className = 'za-form-grid';
+        const action = createFormControl({ label: 'Ao tocar no botão', type: 'select', value: item.type, options: [
+          { value: 'QUICK_REPLY', label: 'Enviar uma resposta' },
+          { value: 'URL', label: 'Abrir um site' },
+          { value: 'PHONE_NUMBER', label: 'Fazer uma ligação' }
+        ] });
+        const label = createFormControl({ label: 'Texto do botão', value: item.text, maxLength: 25, placeholder: 'Ex.: Falar com suporte' });
+        fields.append(action.wrapper, label.wrapper);
+        label.input.addEventListener('input', () => { item.text = label.input.value; renderPreview(); });
+        action.input.addEventListener('change', () => {
+          item.type = action.input.value;
+          renderButtonEditor();
+          renderPreview();
+          buttonList.children[index].querySelector('select').focus();
+        });
+        if (item.type === 'URL') {
+          const mode = createFormControl({ label: 'Tipo de link', type: 'select', value: item.dynamic ? 'dynamic' : 'static', full: true, options: [
+            { value: 'static', label: 'Mesmo link para todos' },
+            { value: 'dynamic', label: 'Final do link personalizado para cada envio' }
+          ] });
+          const url = createFormControl({ label: item.dynamic ? 'Parte fixa do link' : 'Endereço do site', value: item.url, full: true,
+            placeholder: item.dynamic ? 'https://loja.com/pedido/' : 'https://loja.com',
+            help: item.dynamic ? 'O sistema adiciona o dado personalizado ao final deste endereço.' : 'Use o endereço completo, começando com https://.' });
+          fields.append(mode.wrapper, url.wrapper);
+          mode.input.addEventListener('change', () => {
+            item.dynamic = mode.input.value === 'dynamic';
+            renderButtonEditor(); renderPreview();
+            buttonList.children[index].querySelectorAll('select')[1].focus();
+          });
+          url.input.addEventListener('input', () => { item.url = url.input.value; renderPreview(); });
+          if (item.dynamic) {
+            const example = createFormControl({ label: 'Exemplo do final personalizado', value: item.example, full: true, maxLength: 300,
+              placeholder: 'Ex.: pedido123', help: 'Informe um exemplo para a Meta analisar. Você escolherá o valor real ao enviar a mensagem.' });
+            fields.append(example.wrapper);
+            example.input.addEventListener('input', () => { item.example = example.input.value; renderPreview(); });
+          }
+        } else if (item.type === 'PHONE_NUMBER') {
+          const phone = createFormControl({ label: 'Telefone com código do país e DDD', type: 'tel', value: item.phone_number, full: true, placeholder: '+55 (11) 99999-9999' });
+          fields.append(phone.wrapper);
+          phone.input.addEventListener('input', () => { item.phone_number = phone.input.value; renderPreview(); });
+        }
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'za-btn';
+        remove.textContent = 'Remover botão';
+        remove.setAttribute('aria-label', `Remover botão ${index + 1}`);
+        remove.addEventListener('click', () => {
+          buttonItems.splice(index, 1); renderButtonEditor(); renderPreview(); addButton.focus();
+        });
+        card.append(title, fields, remove);
+        buttonList.append(card);
+      });
+    };
+    addButton.addEventListener('click', () => {
+      if (saving || buttonItems.length >= 10) return;
+      buttonItems.push({ type: 'QUICK_REPLY', text: '', url: '', dynamic: false, example: '', phone_number: '' });
+      renderButtonEditor(); renderPreview();
+      buttonList.lastElementChild.querySelector('input').focus();
     });
+
+    for (const field of [headerField, bodyField]) {
+      const insert = document.createElement('button');
+      insert.type = 'button';
+      insert.className = 'za-btn';
+      insert.textContent = 'Inserir dado variável';
+      const help = document.createElement('p');
+      help.className = 'za-form-help';
+      help.textContent = 'Posicione o cursor no texto e clique para inserir um dado que muda a cada envio, como nome ou número do pedido. Depois, preencha um exemplo abaixo.';
+      field.wrapper.append(help, insert);
+      insert.addEventListener('click', () => {
+        const input = field.input;
+        const indexes = getTemplateVariableIndexes(input.value);
+        const token = `{{${Math.max(0, ...indexes) + 1}}}`;
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? start;
+        if (input.value.length - (end - start) + token.length > input.maxLength) {
+          showError('Não há espaço para outro dado variável neste texto.'); return;
+        }
+        input.setRangeText(token, start, end, 'end');
+        renderExamples(); renderPreview(); input.focus();
+      });
+    }
     const authMinutesField = createFormControl({
       label: 'Expiração do código (minutos)',
       type: 'number',
@@ -2217,11 +2323,12 @@
 
     const examplesTitle = document.createElement('h4');
     examplesTitle.className = 'za-form-section-title';
-    examplesTitle.textContent = 'Exemplos dos parâmetros';
+    examplesTitle.textContent = 'Exemplos dos dados variáveis para análise da Meta';
     const examples = document.createElement('div');
     examples.className = 'za-template-example-list';
     const errorBox = document.createElement('div');
     errorBox.className = 'za-form-error';
+    errorBox.setAttribute('role', 'alert');
     errorBox.hidden = true;
 
     formGrid.append(
@@ -2247,7 +2354,7 @@
     const submitButton = document.createElement('button');
     submitButton.type = 'submit';
     submitButton.className = 'za-btn primary';
-    submitButton.textContent = 'Enviar para aprovacao';
+    submitButton.textContent = 'Enviar para aprovação';
     submitButton.setAttribute('form', form.id);
     footer.append(cancelButton, submitButton);
 
@@ -2269,10 +2376,10 @@
         : [
             ...getTemplateVariableIndexes(
               headerFormatField.input.value === 'TEXT' ? headerField.input.value : ''
-            ).map((index) => ({ key: `HEADER:${index}`, label: `Cabeçalho {{${index}}}` })),
+            ).map((index) => ({ key: `HEADER:${index}`, label: `Dado ${index} do cabeçalho` })),
             ...getTemplateVariableIndexes(bodyField.input.value).map((index) => ({
               key: `BODY:${index}`,
-              label: `Mensagem {{${index}}}`
+              label: `Dado ${index} da mensagem`
             }))
           ];
       examplesTitle.hidden = !definitions.length;
@@ -2308,6 +2415,8 @@
       bodyField.wrapper.hidden = isAuth;
       footerField.wrapper.hidden = isAuth;
       buttonsField.wrapper.hidden = isAuth;
+      buttonsField.wrapper.disabled = isAuth;
+      authMinutesField.input.disabled = !isAuth;
       authMinutesField.wrapper.hidden = !isAuth;
 
       if (isAuth) {
@@ -2319,7 +2428,7 @@
         return;
       }
       const values = currentExamples();
-      const parsedButtons = parseTemplateButtonLines(buttonsField.input.value);
+      const parsedButtons = buildTemplateButtons(buttonItems);
       renderGenericWhatsAppPreview(previewHost, {
         header:
           headerFormatField.input.value === 'TEXT'
@@ -2346,7 +2455,7 @@
       const bodyIndexes = isAuthentication ? [] : getTemplateVariableIndexes(bodyField.input.value);
       const parsedButtons = isAuthentication
         ? { buttons: [], errors: [] }
-        : parseTemplateButtonLines(buttonsField.input.value);
+        : buildTemplateButtons(buttonItems);
       if (parsedButtons.errors.length) throw new Error(parsedButtons.errors[0]);
       if (!/^[a-z0-9_]{1,512}$/.test(readString(nameField.input.value).toLowerCase())) {
         throw new Error('O nome deve usar apenas letras minúsculas, números e sublinhado.');
@@ -2373,7 +2482,7 @@
         readString(examplesMap[`BODY:${index}`])
       );
       if ([...headerExamples, ...bodyExamples].some((value) => !value)) {
-        throw new Error('Informe um exemplo para cada parâmetro {{n}}.');
+        throw new Error('Preencha os exemplos dos dados variáveis abaixo da mensagem.');
       }
       return {
         name: readString(nameField.input.value).toLowerCase(),
@@ -2423,14 +2532,14 @@
       }
       saving = true;
       submitButton.disabled = true;
-      const formInputs = Array.from(form.querySelectorAll('input, select, textarea'));
+      const formInputs = Array.from(form.querySelectorAll('input, select, textarea, button'));
       const disabledStates = formInputs.map((input) => input.disabled);
       formInputs.forEach((input) => { input.disabled = true; });
       const unlockForm = () => formInputs.forEach((input, index) => { input.disabled = disabledStates[index]; });
       const confirmed = await showModernConfirm({
         title: 'Enviar template para aprovacao?',
-        message: 'Depois do envio, a Meta analisara o nome, a categoria e o conteudo.',
-        confirmText: 'Enviar para aprovacao',
+        message: 'Depois do envio, a Meta analisará o nome, a categoria e o conteúdo.',
+        confirmText: 'Enviar para aprovação',
         cancelText: 'Revisar'
       });
       if (!confirmed || closed) {
@@ -2449,7 +2558,7 @@
           confirm_submission: true
         }, submissionMedia);
         cleanup();
-        showToast('Template enviado para aprovacao da Meta.', 'success', 3600);
+        showToast('Template enviado para aprovação da Meta.', 'success', 3600);
         if (typeof onCreated === 'function') await onCreated();
       } catch (error) {
         showError(error?.message || 'Não foi possível enviar o template.');
@@ -2457,7 +2566,7 @@
         saving = false;
         unlockForm();
         submitButton.disabled = false;
-        submitButton.textContent = 'Enviar para aprovacao';
+        submitButton.textContent = 'Enviar para aprovação';
       }
     };
 
@@ -2475,7 +2584,6 @@
       headerField.input,
       bodyField.input,
       footerField.input,
-      buttonsField.input,
       authMinutesField.input
     ]) {
       input.addEventListener('input', () => {
@@ -2647,7 +2755,7 @@
       for (let index = 1; index <= (schema?.headerCount || 0); index += 1) {
         parameterDefinitions.push({
           key: `HEADER:${index}`,
-          label: `Cabeçalho {{${index}}}`,
+          label: `Dado ${index} do cabeçalho`,
           placeholder: 'Valor do cabeçalho',
           maxLength: 4096
         });
@@ -2655,7 +2763,7 @@
       for (let index = 1; index <= (schema?.bodyCount || 0); index += 1) {
         parameterDefinitions.push({
           key: `BODY:${index}`,
-          label: `Mensagem {{${index}}}`,
+          label: `Dado ${index} da mensagem`,
           placeholder: 'Valor da mensagem',
           maxLength: 4096
         });
