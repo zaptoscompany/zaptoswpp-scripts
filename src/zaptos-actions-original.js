@@ -1409,7 +1409,7 @@
 
       if (!response.ok || !data || data.ok === false) {
         throw new Error(
-          readString(data?.error || data?.message) ||
+          readString(data?.error || data?.message).replace(/uaz[\s_-]*api/gi, 'Não Oficial') ||
             `Falha ao consultar templates (${response.status}).`
         );
       }
@@ -4318,7 +4318,7 @@
         payload = null;
       }
       if (!response.ok || !payload?.ok) {
-        throw new Error(readString(payload?.error) || `Falha ao buscar instâncias (HTTP ${response.status}).`);
+        throw new Error(readString(payload?.error).replace(/uaz[\s_-]*api/gi, 'Não Oficial') || `Falha ao buscar instâncias (HTTP ${response.status}).`);
       }
       const instances = normalizeOfficialInstanceNames(payload);
       whatsappActionsState.instances = instances;
