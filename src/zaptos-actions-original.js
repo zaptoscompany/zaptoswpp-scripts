@@ -632,6 +632,31 @@
       .za-form-field.full {
         grid-column: 1 / -1;
       }
+      .za-api-options {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+      }
+      .za-api-card {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 16px;
+        border: 1px solid #dbe3ed;
+        border-radius: 12px;
+        background: #fff;
+        cursor: pointer;
+      }
+      .za-api-card:hover { border-color: #94a3b8; background: #f8fafc; }
+      .za-api-card:has(input:checked) {
+        border-color: #059669;
+        background: #ecfdf5;
+        box-shadow: inset 0 0 0 1px #059669;
+      }
+      .za-api-card:focus-within { outline: 2px solid #059669; outline-offset: 3px; }
+      .za-api-card input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; accent-color: #059669; }
+      .za-api-card strong { display: block; color: #0f172a; font-size: 13px; }
+      .za-api-card small { display: block; margin-top: 5px; color: #64748b; font-size: 12px; line-height: 1.5; }
       .za-form-help {
         margin: 5px 0 0;
         color: #64748b;
@@ -1855,6 +1880,50 @@
     const label = document.createElement('label');
     label.className = 'za-label';
     label.textContent = readString(options.label);
+
+    if (options.type === 'api-cards') {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.value = options.value || 'unofficial';
+      const group = document.createElement('div');
+      group.className = 'za-api-options';
+      group.setAttribute('role', 'radiogroup');
+      const groupId = `za-api-${Math.random().toString(36).slice(2)}`;
+      label.id = `${groupId}-label`;
+      group.setAttribute('aria-labelledby', label.id);
+      for (const item of options.options || []) {
+        const card = document.createElement('label');
+        card.className = 'za-api-card';
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = groupId;
+        radio.value = item.value;
+        radio.checked = input.value === item.value;
+        const text = document.createElement('span');
+        const title = document.createElement('strong');
+        title.textContent = item.label;
+        const description = document.createElement('small');
+        description.textContent = item.description || '';
+        text.append(title, description);
+        card.append(radio, text);
+        group.appendChild(card);
+        radio.addEventListener('change', () => {
+          if (!radio.checked) return;
+          input.value = radio.value;
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      }
+      wrapper.append(label, input, group);
+      if (options.help) {
+        const help = document.createElement('p');
+        help.className = 'za-form-help';
+        help.id = `${groupId}-help`;
+        help.textContent = options.help;
+        group.setAttribute('aria-describedby', help.id);
+        wrapper.appendChild(help);
+      }
+      return { wrapper, input };
+    }
 
     let input;
     if (options.type === 'select') {
@@ -3655,10 +3724,11 @@
         customEditor: 'menu',
         fields: [
           select('menu_api', 'API da instância que fará o envio', [
-            { value: 'official', label: 'API Oficial' },
-            { value: 'unofficial', label: 'API Não oficial' }
+            { value: 'unofficial', label: 'Não oficial', description: 'Uazapi · Botões, listas e enquetes.' },
+            { value: 'official', label: 'Oficial', description: 'WhatsApp Business · Até 3 respostas ou um link.' }
           ], {
-            value: 'official',
+            type: 'api-cards',
+            value: 'unofficial',
             help: 'Valida as opções para a API escolhida. Não troca a instância da conversa; use a API correspondente à instância de destino.',
             full: true
           }),
@@ -3698,7 +3768,7 @@
             requireActionValue(values, 'title', 'a pergunta da enquete');
           }
 
-          if ((values.menu_api || 'official') === 'official') {
+          if ((values.menu_api || 'unofficial') === 'official') {
             if (values.type === 'poll') {
               throw new Error('Enquetes deste menu exigem uma instância Não oficial.');
             }

@@ -179,7 +179,8 @@ test('two links reproduce the reported rejection and now explain how to fix it',
     { label: 'asdasdasdas', action: 'URL', value: 'https://app.zaptos.com.br/?category=team-inbox&tab=starred' },
   ];
   assert.throws(() => build(items, { menu_api: 'official' }), /apenas um botão de link/);
-  assert.throws(() => build(items, { menu_api: '' }), /apenas um botão de link/);
+  assert.deepEqual(parse(build(items, { menu_api: '' })).choices,
+    items.map((item) => `${item.label}|${item.value}`));
   const payload = parse(build(items));
   try {
     await official(payload);

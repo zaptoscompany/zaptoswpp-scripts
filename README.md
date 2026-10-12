@@ -95,10 +95,10 @@ atualizado, que aceita `#choices` em JSON e continua lendo comandos antigos com
 `#select`. Depois, atualize o script carregado no CRM e gere novamente os comandos
 de menu afetados; ações salvas anteriormente não são alteradas automaticamente.
 
-O campo **API da instância que fará o envio** começa em Oficial. Ele valida
+O campo **API da instância que fará o envio** usa cartões de seleção e começa em Não oficial. Ele valida
 as combinações antes de habilitar copiar, inserir ou enviar: no modo Oficial,
 recusa múltiplos links, link misturado com resposta, ligação/cópia e enquete.
-Essa seleção não altera a instância de destino; para uma instância Não oficial,
+Essa seleção não altera a instância de destino; para uma instância Oficial,
 selecione explicitamente esse modo. Comandos digitados à mão continuam sendo
 validados pelo receptor, com orientação específica em caso de combinação inválida.
 
