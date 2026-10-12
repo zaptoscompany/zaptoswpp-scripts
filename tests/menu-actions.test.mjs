@@ -204,7 +204,7 @@ test('official builder rejects mixed actions, calls, copy, excess replies and po
   assert.throws(() => build(Array.from({ length: 4 }, (_, i) => ({ label: `Resposta ${i}` })),
     { menu_api: 'official' }), /máximo 3/);
   assert.throws(() => build([{ label: 'Sim' }, { label: 'Não' }],
-    { menu_api: 'official', type: 'poll' }), /Não oficial/);
+    { menu_api: 'official', type: 'poll' }), /Não Oficial/);
   assert.match(receiver.mapSendFailureReason('OFFICIAL_MENU_TEMPLATE_REQUIRED'), /compatible message template approved by Meta/);
 });
 

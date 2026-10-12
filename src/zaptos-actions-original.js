@@ -3724,7 +3724,7 @@
         customEditor: 'menu',
         fields: [
           select('menu_api', 'API da instância que fará o envio', [
-            { value: 'unofficial', label: 'Não oficial', description: 'Uazapi · Botões, listas e enquetes.' },
+            { value: 'unofficial', label: 'Não Oficial', description: 'WhatsApp QR Code · Botões, listas e enquetes.' },
             { value: 'official', label: 'Oficial', description: 'WhatsApp Business · Até 3 respostas ou um link.' }
           ], {
             type: 'api-cards',
@@ -3770,12 +3770,12 @@
 
           if ((values.menu_api || 'unofficial') === 'official') {
             if (values.type === 'poll') {
-              throw new Error('Enquetes deste menu exigem uma instância Não oficial.');
+              throw new Error('Enquetes deste menu exigem uma instância Não Oficial.');
             }
             if (values.type === 'button') {
               const buttons = choices.map((choice, index) => normalizeActionButton(choice, index));
               if (buttons.some((button) => ['CALL', 'COPY'].includes(button.type))) {
-                throw new Error('Na API Oficial, ligação e cópia precisam de um template aprovado compatível. Use Templates ou uma instância Não oficial.');
+                throw new Error('Na API Oficial, ligação e cópia precisam de um template aprovado compatível. Use Templates ou uma instância Não Oficial.');
               }
               if (buttons.some((button) => button.type === 'URL') && buttons.length !== 1) {
                 throw new Error('Na API Oficial, este menu aceita apenas um botão de link, sem outros botões. Para mais links, use um template aprovado compatível ou mensagens separadas.');
@@ -4781,7 +4781,7 @@
               { value: 'CALL', label: 'Ligar para um telefone' },
               { value: 'COPY', label: 'Copiar um código' }
             ],
-            help: 'Não oficial: até 10 botões. Oficial: até 3 respostas ou um único link, sem misturar ações. Ligações e cópia exigem template na Oficial.'
+            help: 'Não Oficial: até 10 botões. Oficial: até 3 respostas ou um único link, sem misturar ações. Ligações e cópia exigem template na Oficial.'
           });
           const labels = {
             REPLY: ['ID da resposta (opcional)', 'saiba_mais'],
