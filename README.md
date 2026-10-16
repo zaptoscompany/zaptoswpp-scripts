@@ -111,3 +111,116 @@ os tipos de botão que exigem esse formato.
 Teste de integração sem envio real (Node 24+, com o checkout `zaptoswppSupabase`
 ao lado deste repositório): `node --test tests/menu-actions.test.mjs`.
 Para outro caminho, configure `ZAPTOS_RECEIVER_SOURCE` com o arquivo `ghl_in-redis.ts`.
+
+## Encaminhar mensagens entre contatos
+
+A versão `2026.10.16.3` de `src/zaptos-actions-original.js` adiciona **Encaminhar
+Mensagem** ao menu. O usuário vê a prévia, pesquisa por nome ou telefone na
+subconta atual, seleciona o destinatário e confirma. A busca retorna até 20
+contatos; refine o termo para localizar outros. Ao abrir, o seletor lista os contatos
+das 20 conversas mais recentes, sem repetir o mesmo contato. Limpar a busca volta
+a essa lista. Se a instalação não tiver permissão para listar conversas, mostra
+contatos como alternativa; uma falha na listagem não bloqueia a busca. O rascunho
+aberto é preservado.
+
+Toda a funcionalidade está na Edge Function dedicada `forward-ghl-message`:
+validação da sessão, busca, leitura da mensagem, registro no histórico e envio
+direto ao provedor de WhatsApp. **Não chama, não importa e não exige alterações
+em `ghl_in-redis.ts`**, nem utiliza sua fila. A chave de serviço do Supabase não é
+encaminhada a outro endpoint; é usada somente pelo cliente de banco no servidor.
+
+O fluxo aceita texto e até 10 anexos HTTPS de mensagens enviadas ou recebidas já
+sincronizadas na tabela `messages`. Mensagens com falha, agendadas, pendentes,
+comandos enviados pelo gerador de ações e avisos do sistema não são encaminhados.
+Templates e elementos interativos não são recriados. Anexos devem continuar
+acessíveis ao provedor. A extensão da URL determina imagem, vídeo ou áudio; URLs
+sem extensão reconhecida são enviadas como documento. Legendas de áudio e textos
+com múltiplos anexos são enviados em mensagem separada.
+
+A função seleciona o canal atribuído ao usuário, depois o canal associado ao
+contato, depois o canal principal ou o único disponível. Configurações ambíguas
+exigem definir um canal; não há escolha aleatória. A consulta às instâncias segue
+a configuração existente `INSTANCE_DELETION_ASYNC_ENABLED` para a view de canais
+ativos. Na API não oficial, envia `forward: true`. Na oficial, reenvia o conteúdo
+pela API do gateway, respeitando as regras desse canal, inclusive a janela de
+atendimento. Credenciais de canal são lidas e usadas somente no servidor.
+
+Publicação:
+
+1. Execute `src/supabase/migrations/20261016_ghl_message_forwards.sql`. Ela também
+   adiciona `provider_message_ids` caso a primeira revisão já tenha sido aplicada.
+2. Publique `src/supabase/functions/edge-fcuntions/forward-ghl-message.ts` como
+   **forward-ghl-message**, com os secrets abaixo. Desative a verificação JWT do
+   gateway **somente nessa função** (`verify_jwt = false`); ela própria valida o
+   contexto criptografado da GHL antes de acessar dados.
+3. Atualize o script original no CRM. Se usar a distribuição ofuscada, gere-a
+   primeiro com `src/build-zaptos-actions-criptografado.ps1`. Recarregue a página.
+4. Valide texto, imagem, áudio e documento entre contatos de teste na GHL.
+
+| Secret | Valor |
+| --- | --- |
+| `GHL_APP_ID` | ID público do aplicativo Zaptos instalado |
+| `GHL_APP_SHARED_SECRET` | Shared Secret do aplicativo; somente no servidor |
+| `GHL_CONVERSATION_PROVIDER_ID` | ID do provedor SMS do Zaptos |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Variáveis padrão do projeto |
+| `ZAPTOS_LOCAL_DATA_KEY` | Chave existente para descriptografar credenciais de canais oficiais, se utilizados |
+| `META_GRAPH_VERSION` | Opcional, padrão `v25.0`, para canais oficiais |
+
+`ZAPTOS_FORWARD_RECEIVER_URL` não é utilizado e pode ser removido, caso tenha sido
+configurado para a versão anterior. Não é necessário publicar o receptor principal.
+Para outro projeto, configure `window.__ZAPTOS_FORWARD_EDGE_URL__` antes do script.
+
+O navegador usa `window.exposeSessionDetails(APP_ID)`. A função valida a sessão e
+exige que a subconta corresponda ao contexto autenticado. O aplicativo precisa dos
+escopos `contacts.readonly`, `conversations.readonly` (conversas recentes),
+`conversations/message.readonly` e
+`conversations/message.write`, com token válido em `code_autorization_ghl`. O
+endpoint de configuração retorna somente o ID público do aplicativo.
+
+O histórico é registrado por `POST /conversations/messages/inbound` com direção
+`outbound`, sem o campo `status` (não documentado nesse endpoint) e sem campos
+opcionais de conteúdo vazios. Em seguida, a função envia diretamente ao canal e
+salva os IDs retornados pelo provedor. Sucesso significa **aceito pelo provedor**,
+não confirmação de entrega ao destinatário. A função não marca como entregue
+apenas com o aceite; recibos de entrega continuam dependendo da integração de
+webhooks do provedor com o histórico da GHL.
+
+`ghl_message_forwards` mantém idempotência e recibos de cada parte. Somente a chave
+de serviço acessa a tabela. Estados: `submitting` (registro ainda não confirmado),
+`registered` (histórico criado), `dispatching` (envio assumido atomicamente),
+`accepted` (todas as partes aceitas pelo provedor). **Verificar resultado** usa o
+mesmo ID e não repete registros nem envios já assumidos. Se houver timeout, falha
+ou aceite parcial, confira a conversa e `provider_message_ids` antes de criar
+outra solicitação. Não existe repetição automática de envios incertos.
+
+Testes do recurso, independentes do repositório do receptor (Node 24+):
+
+```sh
+npm ci --prefix tests
+node --test tests/forward-message.test.mjs
+```
+
+Os testes simulam a GHL e os provedores, incluindo sessão, isolamento entre
+subcontas, idempotência, texto/mídia, pesquisa assíncrona e cancelamento. Não enviam
+mensagens reais; a validação final deve ocorrer no CRM publicado.
+
+Referências: [sessão da GHL](https://marketplace.gohighlevel.com/docs/other/user-context-marketplace-apps/index.html),
+[busca de contatos](https://marketplace.gohighlevel.com/docs/ghl/contacts/search-contacts-advanced/)
+e [registro no histórico](https://marketplace.gohighlevel.com/docs/2021-07-28/ghl/conversations/add-an-inbound-message/).
+
+
+Erros da GHL no encaminhamento agora retornam `operation` e `upstreamStatus`,
+identificando a etapa (`read_message`, `search_contacts`, `recent_conversations`,
+`read_contact` ou `register_message`) e o HTTP original. Logs registram apenas
+etapa/status, sem corpo de resposta, dados de contatos ou credenciais. Atualize a
+Edge Function **e** o script original para receber o diagnóstico e a lista inicial.
+A mensagem genérica antiga `ghl_error` não permite determinar a causa de uma falha
+já ocorrida; é necessário obter o novo diagnóstico no ambiente publicado.
+
+Para a rejeição HTTP 422 em `register_message`, republique somente
+`forward-ghl-message.ts` atualizado e reabra o modal para iniciar outra solicitação.
+O ajuste remove `status` do registro e omite texto/anexos vazios. Isso corrige o
+formato enviado, mas o HTTP 422 anterior não identifica sozinho o campo recusado.
+Erros de validação reconhecidos agora incluem `validationIssues`, com nomes de
+campos e regras de uma lista fixa, sem valores ou texto bruto da GHL. A confirmação
+da correção depende de testar na subconta após publicar.

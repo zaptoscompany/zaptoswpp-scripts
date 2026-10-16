@@ -1,0 +1,7 @@
+{
+  "name": "zaptos-scripts-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:forward": "node --test forward-message.test.mjs" },
+  "devDependencies": { "crypto-js": "4.2.0", "linkedom": "0.18.12" }
+}

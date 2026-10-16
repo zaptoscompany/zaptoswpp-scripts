@@ -6,7 +6,7 @@
   if (window.__ZAPTOS_MESSAGE_ACTIONS_V1__) return;
   window.__ZAPTOS_MESSAGE_ACTIONS_V1__ = true;
 
-  const SCRIPT_VERSION = '2026.10.08.2';
+  const SCRIPT_VERSION = '2026.10.16.3';
   const DEBUG = false;
   const DETAILS_ACTION_ID = 'conv-message-reply-action-details';
   const MENU_ACTION_CLASS =
@@ -43,6 +43,9 @@
   const ACTIONS_INSTANCES_EDGE_URL =
     window.__ZAPTOS_SWITCH_EDGE_URL__ ||
     'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/get-wpp-instances-switch';
+  const FORWARD_EDGE_URL = window.__ZAPTOS_FORWARD_EDGE_URL__ ||
+    'https://qokrdahiutcpabsxirzx.supabase.co/functions/v1/forward-ghl-message';
+  const forwardState = { activeClose: null, config: null };
   const ADDRESS_SEARCH_URL =
     window.__ZAPTOS_ADDRESS_SEARCH_URL__ || 'https://photon.komoot.io/api/';
   const ADDRESS_COUNTRY_CODE =
@@ -833,6 +836,13 @@
         line-height: 1.5;
         text-align: center;
       }
+      .za-forward-preview { padding: 12px; background: #f0fdf4; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow-y: auto; margin-bottom: 16px; }
+      .za-forward-results { display: grid; gap: 6px; max-height: 260px; overflow-y: auto; }
+      .za-forward-contact { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px; background: #fff; color: #1f2937; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; }
+      .za-forward-contact[aria-pressed="true"] { border-color: #16a34a; background: #f0fdf4; }
+      .za-forward-contact:disabled { opacity: .5; cursor: not-allowed; }
+      .za-forward-contact span, .za-forward-status { font-size: 13px; color: #475569; }
+      .za-forward-status { margin: 12px 0; }
       .za-preview-contact,
       .za-preview-location,
       .za-preview-payment {
@@ -6497,6 +6507,249 @@
     return '';
   }
 
+  async function callForwardEdge(action, payload, signal) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    const timer = setTimeout(abort, 30000);
+    try {
+      const response = await fetch(FORWARD_EDGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, action }),
+        signal: controller.signal
+      });
+      const data = await response.json();
+      if (!response.ok || data.ok !== true) {
+        const error = new Error(readString(data.error) || 'Não foi possível concluir a operação.');
+        error.code = data.code;
+        throw error;
+      }
+      return data;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    }
+  }
+
+  async function getForwardSession(signal) {
+    if (!forwardState.config) forwardState.config = await callForwardEdge('config', {}, signal);
+    const appId = readString(forwardState.config.appId);
+    if (!appId || typeof window.exposeSessionDetails !== 'function') {
+      throw new Error('Não foi possível validar sua sessão. Abra o CRM com a integração do WhatsApp instalada.');
+    }
+    // A credencial OAuth e o segredo do aplicativo permanecem no servidor.
+    let timer;
+    const encryptedData = await Promise.race([
+      window.exposeSessionDetails(appId),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('A sessão não respondeu. Reabra o encaminhamento.')), 10000);
+      })
+    ]).finally(() => clearTimeout(timer));
+    if (signal?.aborted) throw new Error('Operação cancelada.');
+    if (typeof encryptedData !== 'string' || !encryptedData) throw new Error('Sessão inválida. Recarregue o CRM.');
+    return encryptedData;
+  }
+
+  async function runForwardAction(context) {
+    if (forwardState.activeClose) return;
+    const locationId = getCurrentLocationId();
+    const messageId = readString(context?.messageId);
+    if (!locationId || !/^[A-Za-z0-9_-]{8,80}$/.test(messageId) || !findMessageItemById(messageId)) {
+      showToast('Abra o menu da mensagem que deseja encaminhar novamente.', 'error', 3500);
+      return;
+    }
+    const sourceHref = location.href;
+    const previousFocus = document.activeElement;
+    const frame = createDialogFrame('Encaminhar mensagem', 'Escolha um contato desta subconta.');
+    frame.card.setAttribute('role', 'dialog');
+    frame.card.setAttribute('aria-modal', 'true');
+    frame.card.setAttribute('aria-label', 'Encaminhar mensagem');
+    const preview = document.createElement('div');
+    preview.className = 'za-forward-preview';
+    preview.textContent = 'Carregando mensagem…';
+    const label = document.createElement('label');
+    label.className = 'za-label';
+    label.textContent = 'Nome ou telefone do contato';
+    label.htmlFor = 'za-forward-search';
+    const search = document.createElement('input');
+    search.id = label.htmlFor;
+    search.className = 'za-input';
+    search.type = 'search';
+    search.autocomplete = 'off';
+    search.placeholder = 'Buscar por nome ou telefone';
+    search.disabled = true;
+    const status = document.createElement('p');
+    status.className = 'za-forward-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    const results = document.createElement('div');
+    results.className = 'za-forward-results';
+    const selection = document.createElement('p');
+    selection.className = 'za-forward-status';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'za-btn';
+    cancel.textContent = 'Cancelar';
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'za-btn primary';
+    send.textContent = 'Encaminhar';
+    send.disabled = true;
+    frame.body.append(preview, label, search, status, results, selection);
+    frame.footer.append(cancel, send);
+
+    const lifetime = new AbortController();
+    let searchController = null;
+    let searchTimer;
+    let generation = 0;
+    let closed = false;
+    let sending = false;
+    let selected = null;
+    let source = null;
+    let encryptedData = '';
+    // Mantido nas tentativas: o servidor não repete o POST de envio para este ID.
+    const requestId = window.crypto.randomUUID();
+    const isCurrent = () => !closed && location.href === sourceHref && getCurrentLocationId() === locationId;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(searchTimer);
+      searchController?.abort();
+      lifetime.abort();
+      document.removeEventListener('keydown', onKeydown, true);
+      frame.overlay.remove();
+      forwardState.activeClose = null;
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!sending) cleanup();
+      }
+      if (event.key === 'Tab') {
+        const items = Array.from(frame.card.querySelectorAll('input, button, a[href]')).filter((item) => !item.disabled);
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
+    };
+    cancel.addEventListener('click', () => { if (!sending) cleanup(); });
+    frame.overlay.addEventListener('click', (event) => {
+      if (event.target === frame.overlay && !sending) cleanup();
+    });
+    const loadContacts = async (query) => {
+      const currentGeneration = ++generation;
+      searchController?.abort();
+      searchController = new AbortController();
+      selected = null;
+      selection.textContent = '';
+      send.disabled = true;
+      results.replaceChildren();
+      status.textContent = query ? 'Buscando contatos…' : 'Carregando conversas recentes…';
+      try {
+        const data = await callForwardEdge(query ? 'search' : 'recent', { locationId, encryptedData, ...(query ? { query } : {}) }, searchController.signal);
+        if (!isCurrent() || generation !== currentGeneration || sending) return;
+          const contacts = (Array.isArray(data.contacts) ? data.contacts : []).filter((contact) => contact.id !== source.contactId);
+          status.textContent = contacts.length
+            ? (query ? 'Resultados da busca — selecione o destinatário.' : data.listKind === 'contacts'
+              ? 'Contatos — selecione ou pesquise pelo nome ou telefone.' : 'Conversas recentes — selecione o destinatário.')
+            : (query ? 'Nenhum outro contato encontrado.' : 'Nenhuma conversa recente disponível. Pesquise pelo nome ou telefone.');
+          for (const contact of contacts) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'za-forward-contact';
+            button.disabled = !contact.phone;
+            button.setAttribute('aria-pressed', 'false');
+            const name = document.createElement('strong');
+            name.textContent = contact.name || 'Contato sem nome';
+            const phone = document.createElement('span');
+            phone.textContent = contact.phone || 'Sem telefone cadastrado';
+            button.append(name, phone);
+            button.addEventListener('click', () => {
+              if (sending || !isCurrent()) return;
+              selected = contact;
+              for (const sibling of results.children) sibling.setAttribute('aria-pressed', String(sibling === button));
+              selection.textContent = `Encaminhar para ${contact.name || 'Contato sem nome'} (${contact.phone})?`;
+              send.disabled = false;
+            });
+            results.appendChild(button);
+          }
+      } catch (error) {
+        if (!isCurrent() || generation !== currentGeneration || error.name === 'AbortError') return;
+        status.textContent = `${error.message || 'Falha ao carregar contatos.'}${query ? '' : ' Você pode pesquisar pelo nome ou telefone.'}`;
+      }
+    };
+    search.addEventListener('input', () => {
+      ++generation;
+      clearTimeout(searchTimer);
+      searchController?.abort();
+      selected = null;
+      selection.textContent = '';
+      send.disabled = true;
+      results.replaceChildren();
+      const query = search.value.trim();
+      if (query.length === 1) { status.textContent = 'Digite pelo menos 2 caracteres para buscar.'; return; }
+      status.textContent = query ? 'Buscando contatos…' : 'Carregando conversas recentes…';
+      searchTimer = setTimeout(() => { void loadContacts(query); }, 350);
+    });
+    send.addEventListener('click', async () => {
+      if (sending || !selected || !isCurrent()) return;
+      sending = true;
+      send.disabled = true;
+      search.disabled = true;
+      cancel.disabled = true;
+      send.textContent = 'Encaminhando…';
+      status.textContent = '';
+      try {
+        await callForwardEdge('forward', {
+          locationId, encryptedData, messageId, contactId: selected.id,
+          expectedPhone: selected.phone, expectedRevision: source.revision, requestId
+        }, lifetime.signal);
+        if (!isCurrent()) return;
+        cleanup();
+        showToast(`Encaminhamento solicitado para ${selected.name || selected.phone}. Acompanhe a entrega na conversa de destino.`, 'success', 6000);
+      } catch (error) {
+        if (!isCurrent()) return;
+        // Não repetir automaticamente após timeout: a GHL pode ter recebido o envio.
+        status.textContent = `${error.message || 'Não foi possível confirmar o envio.'} Verifique a conversa de destino antes de tentar novamente.`;
+        send.textContent = 'Verificar resultado';
+        send.disabled = false;
+      } finally {
+        sending = false;
+        cancel.disabled = false;
+        cancel.textContent = 'Fechar';
+      }
+    });
+    forwardState.activeClose = cleanup;
+    document.body.appendChild(frame.overlay);
+    document.addEventListener('keydown', onKeydown, true);
+    cancel.focus();
+    try {
+      encryptedData = await getForwardSession(lifetime.signal);
+      if (!isCurrent()) return cleanup();
+      const data = await callForwardEdge('preview', { locationId, encryptedData, messageId }, lifetime.signal);
+      if (!isCurrent()) return cleanup();
+      source = data.message;
+      preview.textContent = source.text || '(Mensagem com anexo)';
+      if (source.attachmentCount) {
+        const count = document.createElement('p');
+        count.textContent = `${source.attachmentCount} anexo(s) será(ão) encaminhado(s).`;
+        preview.appendChild(count);
+      }
+      search.disabled = false;
+      search.focus();
+      void loadContacts('');
+    } catch (error) {
+      if (!isCurrent()) return;
+      preview.textContent = 'Não foi possível preparar a mensagem.';
+      status.textContent = error.message || 'Falha ao carregar a mensagem.';
+    }
+  }
+
   async function runDeleteAction(context) {
     const messageId = await ensureMessageId(context);
     if (!messageId) return;
@@ -6681,7 +6934,7 @@
     if (!(menuRoot instanceof Element)) return;
 
     const existingItems = Array.from(parentRow.querySelectorAll(ACTION_ITEM_SELECTOR));
-    if (existingItems.length >= 4) {
+    if (existingItems.length >= 5) {
       return;
     }
     if (existingItems.length) {
@@ -6695,6 +6948,12 @@
       label: 'Responder Mensagem',
       iconPath: 'M9 17l-5-5 5-5m-5 5h10a6 6 0 016 6v1',
       action: 'reply'
+    });
+
+    const forwardItem = createMenuActionItem({
+      label: 'Encaminhar Mensagem',
+      iconPath: 'M15 5l7 7-7 7v-5C7 14 4 16 2 20c0-9 5-13 13-13V5z',
+      action: 'forward'
     });
 
     const reactItem = createMenuActionItem({
@@ -6718,6 +6977,7 @@
     });
 
     bindActionClick(replyItem, runReplyAction, parentRow, detailsAction);
+    bindActionClick(forwardItem, runForwardAction, parentRow, detailsAction);
     bindActionClick(reactItem, runReactAction, parentRow, detailsAction);
     bindActionClick(editItem, runEditAction, parentRow, detailsAction);
     bindActionClick(deleteItem, runDeleteAction, parentRow, detailsAction);
@@ -6725,6 +6985,7 @@
     const referenceNode = detailsAction.nextSibling;
     const fragment = document.createDocumentFragment();
     fragment.appendChild(replyItem);
+    fragment.appendChild(forwardItem);
     fragment.appendChild(reactItem);
     fragment.appendChild(editItem);
     fragment.appendChild(deleteItem);
@@ -6751,6 +7012,7 @@
     try {
       if (location.href !== state.lastHref) {
         state.lastHref = location.href;
+        if (forwardState.activeClose) forwardState.activeClose();
         if (typeof templateState.activeClose === 'function') {
           templateState.activeClose();
         }
